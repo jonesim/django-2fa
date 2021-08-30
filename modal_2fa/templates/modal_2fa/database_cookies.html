@@ -1,8 +1,11 @@
 {% load ajax_helpers modal_tags %}
 <div class="m-2">
     {% if not no_title %}
-        <h5>Current Registered Devices</h5>
+        <h5>Authorised Devices</h5>
     {% endif %}
+    {% if not cookies %}
+        <p>No authorised devices</p>
+    {% else %}
     <table class="table table-sm ">
         <tr>
             <th>Device</th>
@@ -13,8 +16,9 @@
             <tr>
                 <td>{{ c.name }}</td>
                 <td>{{ c.last_used|date }}</td>
-                <td>{% ajax_button 'Remove' 'remove_device' url_name='user_devices' id=c.id css_class='btn btn-sm btn-outline-warning' %}</td>
+                <td>{% modal_button_method 'Remove' 'remove_device' id=c.id css_class='btn btn-sm btn-outline-warning' %}</td>
             </tr>
         {% endfor %}
     </table>
+    {% endif %}
 </div>
