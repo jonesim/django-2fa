@@ -10,6 +10,7 @@ class RememberDeviceCookie(models.Model):
     key = models.CharField(max_length=40, default=random_string)
     name = models.CharField(max_length=40, null=True, blank=True)
     last_used = models.DateTimeField(auto_now=True)
+    created = models.DateTimeField(auto_now_add=True)
     user_agent = models.CharField(max_length=240, null=True, blank=True)
     ip = models.GenericIPAddressField(null=True, blank=True, verbose_name='IP')
     active = models.BooleanField(default=False)
