@@ -15,7 +15,7 @@ from crispy_forms.layout import Field, HTML
 from django_modals.helper import crispy_modal_link
 from django_modals.forms import CrispyFormMixin, CrispyForm
 
-
+from .utils import get_custom_auth
 UserModel = get_user_model()
 
 
@@ -56,13 +56,17 @@ class Form2FA(CrispyForm):
     def post_init(self, *args, **kwargs):
 
         if not self.device.confirmed:
-            new_device = (HTML(render_to_string('modal_2fa/new_topt.html',
-                                                {'svg': self.get_qr_code(self.device)})),)
+            new_device = (HTML(render_to_string('modal_2fa/new_totp.html', {'svg': self.get_qr_code(self.device)})),)
         else:
             new_device = ()
         self.buttons = [self.submit_button(),
-                        self.button('Cancel', dict(function='post_modal', button='logout'), self.cancel_class)]
-        return *new_device, Field('code', 'remember')
+                        self.button('Cancel', dict(function='post_modal', button='cancel'), self.cancel_class)]
+        if not self.allowed_remember:
+            # noinspection PyTypeChecker
+            del self.fields['remember']
+            return *new_device, Field('code')
+        else:
+            return *new_device, Field('code', 'remember')
 
     def clean(self):
         super(Form2FA, self).clean()
@@ -74,9 +78,10 @@ class Form2FA(CrispyForm):
                 self.device.save()
         return self.cleaned_data
 
-    def __init__(self, request, device, *args, **kwargs):
+    def __init__(self, request, device, *args, allowed_remember=True, **kwargs):
         self.request = request
         self.device = device
+        self.allowed_remember = allowed_remember
         super(Form2FA, self).__init__(*args, **kwargs)
 
 
@@ -89,9 +94,13 @@ class RememberCookieForm(CrispyForm):
     def post_init(self, *args, **kwargs):
         self.buttons.append(self.submit_button())
         self.buttons.append(self.button('Cancel', 'reload', self.cancel_class))
-        return (Field('name'), HTML('<div class="text-center"><span class="badge badge-danger">'
+        return (Field('name'), HTML('<div class="alert alert-block alert-warning">'
                                     'Warning this will bypass two-factor authorisation in the future '
-                                    'for this device</span></div>'))
+                                    'for this device</div>'))
+
+    def clean(self):
+        if get_custom_auth().max_cookies_already(self.user):
+            raise ValidationError('Too many authorised devices. Please remove one')
 
 
 class CrispyPasswordChangeForm(CrispyFormMixin, PasswordChangeForm):
