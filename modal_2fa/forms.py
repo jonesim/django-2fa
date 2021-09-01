@@ -5,7 +5,7 @@ from qrcode.image.svg import SvgImage
 from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
 from django.contrib.auth.forms import SetPasswordForm, AuthenticationForm, PasswordResetForm, PasswordChangeForm
-from django.forms import ValidationError
+from django.forms import ValidationError, TextInput
 from django.forms.fields import CharField, BooleanField
 from django.template.loader import render_to_string
 from django.utils.safestring import mark_safe
@@ -31,10 +31,10 @@ class CrispyLoginForm(CrispyFormMixin, AuthenticationForm):
 
     def post_init(self, *args, **kwargs):
         self.buttons.append(self.submit_button())
-
-        return (Field('username', 'password'),
-                crispy_modal_link('reset_password_modal', 'Forgot Password?', div=True, div_classes='text-center'),
-                )
+        return (
+            Field('username', 'password'),
+            crispy_modal_link('reset_password_modal', 'Forgot Password?', div=True, div_classes='text-center'),
+        )
 
 
 class Form2FA(CrispyForm):
@@ -42,7 +42,7 @@ class Form2FA(CrispyForm):
     class Meta:
         modal_title = '2FA Code'
 
-    code = CharField()
+    code = CharField(widget=TextInput(attrs={'autocomplete': 'off'}))
     remember = BooleanField(label='Remember device', required=False)
 
     @staticmethod
