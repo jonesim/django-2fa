@@ -20,8 +20,11 @@ class CustomiseAuth:
         return {}
 
     @classmethod
-    def paths(cls):
+    def paths(cls, include_admin=False):
         patterns = pattern_dict
+        if include_admin:
+            from modal_2fa.user_admin import UserAdminModal
+            pattern_dict['user_admin_modal'] = ('user-admin-modal/', UserAdminModal)
         patterns.update(cls.override_views())
         return make_url_patterns(patterns)
 
