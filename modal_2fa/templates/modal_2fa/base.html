@@ -1,0 +1,25 @@
+<!doctype html>
+{% load static modal_tags ajax_helpers %}
+
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% lib_include 'ajax_helpers' 'Bootstrap' 'FontAwesome' module='ajax_helpers.includes' %}
+    {% lib_include 'Modals' 'Toggle' 'select2' 'JQueryUI' 'TinyMce' module='django_modals.includes' %}
+    {% lib_include module='django_menus.includes' %}
+    {% lib_include 'datatable' module='django_datatables.includes' %}
+
+</head>
+<body>
+
+{% block body %}
+    {% block table %}
+        <div class="m-4">
+            {{ datatable.render }}
+        </div>
+    {% endblock %}
+
+{% endblock %}
+
+</body>
+</html>
