@@ -7,6 +7,14 @@ from .models import RememberDeviceCookie
 
 class CustomiseAuth:
 
+    invite_email_template = 'modal_2fa/emails/invite.html'
+    invite_txt_email_template = 'modal_2fa/emails/invite_txt.html'
+    invite_subject_template = 'modal_2fa/emails/invite_subject.txt'
+
+    reset_password_email_template = None
+    reset_password_txt_email_template = 'registration/password_reset_email.html'
+    reset_password_subject_template = 'registration/password_reset_subject.txt'
+
     @staticmethod
     def override_views():
         return {}
