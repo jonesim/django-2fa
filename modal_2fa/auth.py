@@ -33,7 +33,7 @@ class CustomiseMixin:
 
 def auth_2fa_url(request):
     query_string = f'?next={request.GET["next"]}' if 'next' in request.GET else ''
-    return reverse('auth_2fa') + query_string
+    return reverse('auth:auth_2fa') + query_string
 
 
 class SuccessRedirectMixin:
@@ -57,7 +57,7 @@ class SuccessRedirectMixin:
             return self.command_response('redirect', url=auth_2fa_url(self.request))
         else:
             # noinspection PyUnresolvedReferences
-            return self.modal_redirect('auth_2fa')
+            return self.modal_redirect('auth:auth_2fa')
 
 
 class ResetPasswordModal(CustomiseMixin, FormModal, PasswordResetView):
@@ -185,8 +185,8 @@ class Modal2FA(CustomiseMixin, SuccessRedirectMixin, FormModal):
                 self.user = CookieBackend.get_part_login_user(request)
             except ObjectDoesNotExist:
                 if not self.request.is_ajax():
-                    return HttpResponseRedirect(reverse('login_modal'))
-                return self.command_response('redirect', url=reverse('login_modal'))
+                    return HttpResponseRedirect(reverse('auth:login'))
+                return self.command_response('redirect', url=reverse('auth:login'))
         return super().dispatch(request, *args, **kwargs)
 
     def get_device(self):
@@ -212,12 +212,12 @@ class Modal2FA(CustomiseMixin, SuccessRedirectMixin, FormModal):
         del self.request.session[CookieBackend.part_login_key]
         auth_logout(self.request)
         self.add_command('close')
-        return self.command_response('show_modal', modal=reverse('login_modal'))
+        return self.command_response('show_modal', modal=reverse('auth:login'))
 
     def form_valid(self, form):
         auth_login(self.request, self.user)
         if form.cleaned_data.get('remember'):
-            return self.command_response(ajax_modal_replace(self.request, 'confirm_remember',
+            return self.command_response(ajax_modal_replace(self.request, 'auth:confirm_remember',
                                                             modal_type=self.request.POST.get('modal_type')))
         return self.success_response()
 

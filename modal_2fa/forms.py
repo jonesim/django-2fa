@@ -33,7 +33,7 @@ class CrispyLoginForm(CrispyFormMixin, AuthenticationForm):
         self.buttons.append(self.submit_button())
         return (
             Field('username', 'password'),
-            crispy_modal_link('reset_password_modal', 'Forgot Password?', div=True, div_classes='text-center'),
+            crispy_modal_link('auth:reset_password', 'Forgot Password?', div=True, div_classes='text-center'),
         )
 
 

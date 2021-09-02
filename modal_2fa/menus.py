@@ -15,19 +15,19 @@ def add_auth_menu(view):
             DividerItem()
         ]
         if view.request.session.get('authentication_method') in ['2fa', 'cookie']:
-            dropdown += [('remove_2fa', 'Remove 2FA'), ('change_2fa', 'Change 2FA'),
-                         ('user_devices', 'Authorised devices')]
+            dropdown += [('auth:remove_2fa', 'Remove 2FA'), ('auth:change_2fa', 'Change 2FA'),
+                         ('auth:user_devices', 'Authorised devices')]
         else:
-            dropdown += [('auth_2fa', 'Add 2FA')]
+            dropdown += [('auth:auth_2fa', 'Add 2FA')]
 
         dropdown += [
-            ('change_password', 'Change password'),
+            ('auth:change_password', 'Change password'),
             DividerItem()
         ]
 
         if view.request.user.has_perm('auth.change_user'):
             try:
-                user_admin = reverse('user_admin_modal')
+                user_admin = reverse('auth:user_admin_modal')
                 dropdown += [
                     MenuItem(user_admin, link_type=MenuItem.HREF, menu_display='User Admin',
                              font_awesome='fas fa-users-cog'),
@@ -37,12 +37,12 @@ def add_auth_menu(view):
                 pass
 
         dropdown += [
-            MenuItem('logout', font_awesome='fas fa-sign-out-alt'),
+            MenuItem('auth:logout', font_awesome='fas fa-sign-out-alt'),
         ]
         view.add_menu('user_menu').add_items(
             MenuItem(font_awesome='fas fa-user', menu_display='', dropdown=dropdown, placement='bottom-end'),
         )
     else:
         view.add_menu('user_menu', 'button_group').add_items(
-            MenuItem('login_modal', menu_display='Sign In', css_classes='btn-primary'),
+            MenuItem('auth:login', menu_display='Sign In', css_classes='btn-primary'),
         )
