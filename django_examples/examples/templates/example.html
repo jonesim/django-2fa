@@ -4,7 +4,7 @@
 
     <div class="m-4">
         <a class="btn btn-warning" href="{% url 'admin:index' %}">Django Admin</a>
-        {% show_modal 'create_user' button='Create' %}
+        {% show_modal 'auth:user' button='Create' %}
         <br>
         {{ menus.modals.render }}
     </div>
