@@ -99,6 +99,16 @@ class ModalPasswordResetView(CustomiseMixin, SuccessRedirectMixin, FormModal, Pa
         return self.success_response()
 
 
+class UserInvite(ModalPasswordResetView):
+    form_class = CrispySetPasswordForm
+    modal_title = 'Set Password'
+
+    @property
+    def extra_context(self):
+        return {'contents':
+                mark_safe(f'<p>Welcome {self.user.username}</p>')}
+
+
 class ConfirmCookieModal(CustomiseMixin, SuccessRedirectMixin, FormModal):
 
     form_class = RememberCookieForm
