@@ -36,6 +36,8 @@ class CookieBackend(ModelBackend):
     def authenticate(self, request, username=None, password=None, device=None, token=None, **kwargs):
         if device is None:
             user = super().authenticate(request, username, password, **kwargs)
+            if not user:
+                return
             if RememberDeviceCookie.cookie_object(request, user, active=True):
                 request.session['authentication_method'] = 'cookie'
                 return user
