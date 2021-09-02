@@ -1,0 +1,12 @@
+{% extends 'base_menu.html' %}
+{% load ajax_helpers modal_tags %}
+{% block contents %}
+
+    <div class="m-4">
+        <a class="btn btn-warning" href="{% url 'admin:index' %}">Django Admin</a>
+        {% show_modal 'create_user' button='Create' %}
+        <br>
+        {{ menus.modals.render }}
+    </div>
+
+{% endblock %}
