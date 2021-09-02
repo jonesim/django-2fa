@@ -1,0 +1,3 @@
+{% load i18n %}{% autoescape off %}
+{% blocktrans %}Invite to create an account on {{ site_name }}{% endblocktrans %}
+{% endautoescape %}

@@ -1,0 +1,10 @@
+{% load i18n %}{% autoescape off %}
+{% blocktrans %}You've been invited to create an account at {{ site_name }}.{% endblocktrans %}
+<br>
+{% trans "Please go to the following page and choose a new password:" %}
+{% block reset_link %}
+    <a href="{{ protocol }}://{{ domain }}{% url 'invite_user' uidb64=uid token=token %}">SET PASSWORD</a>
+{% endblock %}
+<br>
+{% trans "Your username is " %} {{ user.get_username }}
+{% endautoescape %}
