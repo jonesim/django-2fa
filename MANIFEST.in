@@ -1,0 +1,2 @@
+recursive-include django_2fa *
+recursive-exclude django_2fa *.pyc
