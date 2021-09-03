@@ -63,6 +63,7 @@ class SuccessRedirectMixin:
 class ResetPasswordModal(CustomiseMixin, FormModal, PasswordResetView):
     form_class = CrispyPasswordResetForm
     modal_title = 'Reset Password'
+    success_url = '/'
 
     def form_valid(self, form):
         """
@@ -76,8 +77,10 @@ class ResetPasswordModal(CustomiseMixin, FormModal, PasswordResetView):
         reset_url = reverse('password_reset_confirm', kwargs=dict(uidb64=uid, token=token))
         return self.command_response('redirect', url=reset_url)
         """
-
-        form.save(request=self.request)
+        self.html_email_template_name = self.customisation_class.reset_password_email_template
+        self.email_template_name = self.customisation_class.reset_password_txt_email_template
+        self.subject_template_name = self.customisation_class.reset_password_subject_template
+        PasswordResetView.form_valid(self, form)
         return self.command_response('close')
 
 
