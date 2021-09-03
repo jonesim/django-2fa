@@ -1,0 +1,46 @@
+version: "3"
+
+volumes:
+  celery:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+
+services:
+ django: &django
+  build:
+   context: ./
+  volumes:
+   - ./django_examples/:/app
+   - ./modal_2fa/:/libraries/modal_2fa
+   - /var/run/docker.sock:/var/run/docker.sock
+   # - ../django-modals/django_modals:/libraries/django_modals
+   - celery:/celery
+  command: bash -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8010"
+
+  environment:
+   - PYTHONPATH=/libraries
+  ports:
+   - 8010:8010
+  depends_on:
+    - redis
+
+ redis:
+   restart: always
+   image: redis:5.0.7-alpine
+
+ celery:
+   <<: *django
+   image: havbase_celeryworker
+   command: celery -A django_examples worker -l info
+   ports:
+     - '5556'
+   labels:
+     - "none"
+
+ flower:
+  <<: *django
+  image: flower
+  command: celery -A django_examples flower
+  ports:
+    - 5555:5555
