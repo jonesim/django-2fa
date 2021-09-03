@@ -12,6 +12,11 @@ https://docs.djangoproject.com/en/3.1/ref/settings/
 
 from pathlib import Path
 from modal_2fa.settings_helper import modal_2fa_apps_admin
+try:
+    from .sendgrid import password
+except ModuleNotFoundError:
+    password = 'SENDGRID PASSWORD'
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -143,7 +148,7 @@ DATE_INPUT_FORMATS = ('%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y')
 
 EMAIL_HOST = 'smtp.sendgrid.net'
 EMAIL_HOST_USER = 'apikey'
-EMAIL_HOST_PASSWORD = ""
+EMAIL_HOST_PASSWORD = password
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 
