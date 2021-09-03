@@ -5,7 +5,7 @@ django-filtered-datatables==0.0.18
 django-otp
 qrcode
 django-tab-menus==0.0.13
-django-nested-modals==0.0.12
+django-nested-modals==0.0.14
 django-show-source-code==0.0.3
 Sphinx
 # django-nested-modals @ git+git://github.com/jonesim/django-modals@60752dcf133121cf9ea7dcbbc7234756da2a6a9c
