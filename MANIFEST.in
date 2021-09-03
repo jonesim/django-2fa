@@ -1,2 +1,2 @@
-recursive-include django_2fa *
-recursive-exclude django_2fa *.pyc
+recursive-include modal_2fa *
+recursive-exclude modal_2fa *.pyc
