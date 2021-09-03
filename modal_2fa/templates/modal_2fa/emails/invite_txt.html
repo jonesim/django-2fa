@@ -3,7 +3,7 @@
 <br>
 {% trans "Please go to the following page and choose a new password:" %}
 {% block reset_link %}
-    {{ protocol }}://{{ domain }}{% url 'invite_user' uidb64=uid token=token %}
+    {{ protocol }}://{{ domain }}{% url 'auth:invite_user' uidb64=uid token=token %}
 {% endblock %}
 {% trans "Your username is " %} {{ user.get_username }}
 {% endautoescape %}
