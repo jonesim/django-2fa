@@ -39,10 +39,10 @@ def add_auth_menu(view):
         dropdown += [
             MenuItem('auth:logout', font_awesome='fas fa-sign-out-alt'),
         ]
-        view.add_menu('user_menu').add_items(
+        view.add_menu('user_menu', alignment='right').add_items(
             MenuItem(font_awesome='fas fa-user', menu_display='', dropdown=dropdown, placement='bottom-end'),
         )
     else:
-        view.add_menu('user_menu', 'button_group').add_items(
+        view.add_menu('user_menu', 'button_group', alignment='right').add_items(
             MenuItem('auth:login', menu_display='Sign In', css_classes='btn-primary'),
         )
