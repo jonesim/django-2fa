@@ -3,6 +3,7 @@ from django.contrib.admin.apps import AdminConfig
 
 
 class ModalConfig(AppConfig):
+    default = True
     name = 'modal_2fa'
 
 
