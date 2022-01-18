@@ -5,7 +5,7 @@ with open("readme.md", "r") as fh:
 
 setuptools.setup(
     name="django-modal-2fa",
-    version="0.0.1",
+    version="0.0.2",
     author="Ian Jones",
     description="Django app to implement two factor authentication with bootstrap modals",
     long_description=long_description,
