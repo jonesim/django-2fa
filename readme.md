@@ -1,3 +1,5 @@
+[![PyPI version](https://badge.fury.io/py/django-modal-2fa.svg)](https://badge.fury.io/py/django-modal-2fa)
+
 ## Installation
 
 ### settings
