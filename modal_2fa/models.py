@@ -17,7 +17,7 @@ class RememberDeviceCookie(models.Model):
 
     @staticmethod
     def cookie_name(user):
-        return 'device_' + user.username
+        return 'device_' + user.username.replace('@', '_')
 
     @staticmethod
     def cookie_key(request, user):
