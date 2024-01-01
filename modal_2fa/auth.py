@@ -1,3 +1,4 @@
+from ajax_helpers.mixins import ajax_method
 from django.conf import settings
 from django.core.handlers.wsgi import WSGIRequest
 from django.contrib.auth import login as auth_login, logout as auth_logout
@@ -8,6 +9,7 @@ from django.http import HttpResponseRedirect
 from django.urls import reverse
 from django.utils.safestring import mark_safe
 from django.template.loader import render_to_string
+from django_modals.messages import AjaxMessagesMixin
 
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
@@ -20,6 +22,7 @@ from .models import RememberDeviceCookie
 from .utils import get_client_ip_address, get_custom_auth
 from .forms import CrispyPasswordChangeForm, CrispyPasswordResetForm, CrispySetPasswordForm, CrispyLoginForm, Form2FA,\
     RememberCookieForm
+from .webauthn import WebAuthnMixin
 
 UserModel = get_user_model()
 
@@ -172,7 +175,7 @@ class Modal2FARemove(CustomiseMixin, Modal):
         return 'Are you sure you want to remove the protection of two-factor authentication?'
 
 
-class Modal2FA(CustomiseMixin, SuccessRedirectMixin, FormModal):
+class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirectMixin, FormModal):
     form_class = Form2FA
     modal_title = '2FA Code'
 
@@ -191,6 +194,20 @@ class Modal2FA(CustomiseMixin, SuccessRedirectMixin, FormModal):
                     return HttpResponseRedirect(reverse('auth:login'))
                 return self.command_response('redirect', url=reverse('auth:login'))
         return super().dispatch(request, *args, **kwargs)
+
+    @ajax_method
+    def error(self, data, **kwargs):
+        return self.error_message(f'Error logging in with credential<br>{data}')
+
+    @ajax_method
+    def auth(self, **kwargs):
+        if self.check_authentication(self.user):
+            auth_login(self.request, self.user)
+            self.request.session['authentication_method'] = '2fa'
+            return self.success_response()
+        else:
+            return self.error_message(f'Could not log in with credential<br>{self.last_error}')
+        return self.command_response('null')
 
     def get_device(self):
         device = TOTPDevice.objects.filter(user=self.user).first()
@@ -225,12 +242,24 @@ class Modal2FA(CustomiseMixin, SuccessRedirectMixin, FormModal):
         return self.success_response()
 
 
-class Change2FA(CustomiseMixin, SuccessRedirectMixin, FormModal):
+class Change2FA(WebAuthnMixin, CustomiseMixin, SuccessRedirectMixin, FormModal):
 
     form_class = Form2FA
     modal_title = 'Change 2FA Code'
 
     def button_cancel(self, **_kwargs):
+        return self.command_response('close')
+
+    def button_add_webauthn(self, **kwargs):
+        return self.command_response(self.registration_command(self.request.user))
+
+    def button_remove_webauthn(self, **kwargs):
+        self.request.user.webauthn.all().delete()
+        return self.command_response('close')
+
+    @ajax_method
+    def register(self, **kwargs):
+        self.register_credential(self.request.user)
         return self.command_response('close')
 
     def form_valid(self, form):

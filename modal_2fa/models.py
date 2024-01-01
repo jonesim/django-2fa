@@ -1,4 +1,6 @@
 import datetime
+
+from django.contrib.auth import get_user_model
 from django.db import models
 from django.conf import settings
 from ajax_helpers.utils import random_string
@@ -44,3 +46,12 @@ class RememberDeviceCookie(models.Model):
             remember_cookie.key = random_string()
             remember_cookie.save()
             remember_cookie.set_cookie(response)
+
+
+class WebauthnCredentials(models.Model):
+    user = models.ForeignKey(get_user_model(), on_delete=models.CASCADE, related_name="webauthn")
+    credential_public_key = models.CharField(max_length=9000, blank=True, null=True)
+    credential_id = models.CharField(max_length=9000, blank=True, null=True)
+    created_on = models.DateTimeField(auto_now_add=True)
+    last_used_on = models.DateTimeField(null=True)
+    sign_count = models.IntegerField()

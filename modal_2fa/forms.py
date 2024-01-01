@@ -1,6 +1,8 @@
 from io import BytesIO
 import qrcode
-from qrcode.image.svg import SvgImage
+from django.templatetags.static import static
+
+from qrcode.image.svg import SvgPathFillImage
 
 from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
@@ -47,19 +49,29 @@ class Form2FA(CrispyForm):
 
     @staticmethod
     def get_qr_code(device):
-        img = qrcode.make(device.config_url, image_factory=SvgImage)
+        img = qrcode.make(device.config_url, image_factory=SvgPathFillImage)
         svg = BytesIO()
         img.save(svg)
         svg.seek(0)
         return mark_safe(svg.read().decode('UTF-8'))
 
     def post_init(self, *args, **kwargs):
-
+        web_authn_script = HTML(f'<script src="{static("modal_2fa/webauthn.js")}"></script>')
+        self.buttons = []
         if not self.device.confirmed:
-            new_device = (HTML(render_to_string('modal_2fa/new_totp.html', {'svg': self.get_qr_code(self.device)})),)
+            new_device = (HTML(render_to_string('modal_2fa/new_totp.html', {'svg': self.get_qr_code(self.device)})),
+                          web_authn_script)
+            if self.request.user.webauthn.exists():
+                self.buttons.append(self.button('<i class="fas fa-user-slash"></i> Remove Credential',
+                                                dict(function='post_modal', button='remove_webauthn'),
+                                                'btn btn-secondary', font_awesome='fas  fa-user-slash'))
+            else:
+                self.buttons.append(self.button('<i class="fas fa-user-plus"></i> Add Credential',
+                                                dict(function='post_modal', button='add_webauthn'),
+                                                'btn btn-secondary'))
         else:
-            new_device = ()
-        self.buttons = [self.submit_button(),
+            new_device = (web_authn_script,)
+        self.buttons += [self.submit_button(),
                         self.button('Cancel', dict(function='post_modal', button='cancel'), self.cancel_class)]
         if not self.allowed_remember:
             # noinspection PyTypeChecker
