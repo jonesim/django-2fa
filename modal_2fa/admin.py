@@ -1,7 +1,8 @@
 from django.http import HttpResponseRedirect
 from modal_2fa.auth import ModalLoginView, auth_2fa_url
 from django.contrib import admin
-from .models import *
+
+from modal_2fa.models import RememberDeviceCookie, WebauthnCredentials
 
 
 class AdminSite2FA(admin.AdminSite):
@@ -20,3 +21,8 @@ class AdminSite2FA(admin.AdminSite):
 class RememberDeviceCookieAdmin(admin.ModelAdmin):
     list_display = ('user', 'name', 'active', 'last_used')
     readonly_fields = ('last_used', 'created')
+
+
+@admin.register(WebauthnCredentials)
+class WebauthnCredentialsAdmin(admin.ModelAdmin):
+    pass
