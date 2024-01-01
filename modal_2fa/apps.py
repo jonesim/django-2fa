@@ -1,6 +1,5 @@
 from django.apps import AppConfig
 
 
-class ModalConfig(AppConfig):
-    default = True
+class TwoFactorConfig(AppConfig):
     name = 'modal_2fa'
