@@ -258,6 +258,10 @@ class Change2FA(WebAuthnMixin, CustomiseMixin, SuccessRedirectMixin, FormModal):
         return self.command_response('close')
 
     @ajax_method
+    def error(self, data, **kwargs):
+        return self.error_message(f'Error logging in with credential<br>{data}')
+
+    @ajax_method
     def register(self, **kwargs):
         self.register_credential(self.request.user)
         return self.command_response('close')
