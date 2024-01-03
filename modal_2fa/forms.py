@@ -69,13 +69,12 @@ class Form2FA(CrispyForm):
             new_device = (HTML(render_to_string('modal_2fa/new_totp.html', {'svg': self.get_qr_code(self.device)})),
                           web_authn_script)
             if self.request.user.webauthn.exists():
-                self.buttons.append(self.button('<i class="fas fa-user-slash"></i> Remove Credential',
+                self.buttons.append(self.button('Remove Credential',
                                                 dict(function='post_modal', button='remove_webauthn'),
-                                                'btn btn-secondary', font_awesome='fas  fa-user-slash'))
+                                                'btn btn-secondary', font_awesome='fas fa-user-slash'))
             else:
-                self.buttons.append(self.button('<i class="fas fa-user-plus"></i> Add Credential',
-                                                dict(function='post_modal', button='add_webauthn'),
-                                                'btn btn-secondary'))
+                self.buttons.append(self.button('Add Credential', dict(function='post_modal', button='add_webauthn'),
+                                                'btn btn-secondary', font_awesome='fas fa-user-plus'))
         else:
             new_device = (web_authn_script,)
         self.buttons += [self.submit_button(),
