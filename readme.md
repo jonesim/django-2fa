@@ -1,5 +1,17 @@
 [![PyPI version](https://badge.fury.io/py/django-modal-2fa.svg)](https://badge.fury.io/py/django-modal-2fa)
 
+Adds to Django's authentication with 2FA option
+
+* 2FA with Authenticator app using HOTP
+* Use WebAuthn with Windows Hello, Face ID, Yubikey etc
+* Lock out by ip and username for too many failed attempts
+* Customisable Bootstrap 4 Modal interface with django-nested-modals
+* Cookie option to bypass 2FA (changing key to prevent copying of cookies)
+* Invite users by email to setup an account
+* Forgotten password function to email reset link
+
+![alt text](docs/login.png)
+
 ## Installation
 
 ### settings
