@@ -18,7 +18,7 @@ from django_modals.helper import modal_button_method, modal_button, ajax_modal_r
 from django_modals.modals import FormModal, Modal
 
 from .backends import CookieBackend
-from .models import RememberDeviceCookie
+from .models import RememberDeviceCookie, FailedLoginAttempt
 from .utils import get_client_ip_address, get_custom_auth
 from .forms import CrispyPasswordChangeForm, CrispyPasswordResetForm, CrispySetPasswordForm, CrispyLoginForm, Form2FA,\
     RememberCookieForm
@@ -292,18 +292,39 @@ class ModalLoginView(CustomiseMixin, SuccessRedirectMixin, FormModal, LoginView)
     modal_title = 'Sign In'
     no_header_x = True
 
+    def __init__(self, *args, **kwargs):
+        self._user = None
+        self._locked = False
+        super().__init__(*args, **kwargs)
+
     def button_logout(self, **_kwargs):
         auth_logout(self.request)
         return self.command_response('reload')
 
     def form_invalid(self, form):
         if CookieBackend.get_part_login(self.request):
+            FailedLoginAttempt.clear_failed_attempts(self.request, self._user)
             return self.two_factor_response()
+        FailedLoginAttempt.add_failed_attempt(self.request, self._user)
         return super().form_invalid(form)
+
+    def dispatch(self, request, *args, **kwargs):
+        if 'username' in request.POST:
+            self._user = UserModel.objects.filter(username=self.request.POST['username']).first()
+        check_login = FailedLoginAttempt.check_request(request, self._user)
+        if check_login != True:
+            self._locked = check_login
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs['locked'] = self._locked
+        return kwargs
 
     def form_valid(self, form):
         LoginView.form_valid(self, form)
         response = self.success_response()
+        FailedLoginAttempt.clear_failed_attempts(self.request, self._user)
         RememberDeviceCookie.update_cookie(form.get_user(), self.request, response)
         return response
 

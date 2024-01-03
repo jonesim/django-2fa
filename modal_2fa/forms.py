@@ -31,7 +31,14 @@ class CrispySetPasswordForm(CrispyFormMixin, SetPasswordForm):
 
 class CrispyLoginForm(CrispyFormMixin, AuthenticationForm):
 
+    def __init__(self, *args, locked=None, **kwargs):
+        self.locked = locked
+        super().__init__(*args, **kwargs)
+
     def post_init(self, *args, **kwargs):
+        if self.locked:
+            self.no_buttons = True
+            return [HTML(f'<div class="alert alert-danger">{self.locked}</div>')]
         self.buttons.append(self.submit_button())
         return (
             Field('username', 'password'),

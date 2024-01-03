@@ -3,7 +3,7 @@ from django.utils import timezone
 
 from ajax_helpers.utils import ajax_command
 
-from modal_2fa.models import WebauthnCredentials
+from modal_2fa.models import WebauthnCredential
 
 try:
     from webauthn import (generate_registration_options, options_to_json, verify_registration_response,
@@ -61,7 +61,7 @@ class WebAuthnMixin:
                 expected_rp_id=self.rp_id,
             )
             auth_json = json.loads(authentication_verification.model_dump_json())
-            WebauthnCredentials.objects.create(
+            WebauthnCredential.objects.create(
                 user=user,
                 credential_public_key=auth_json.get("credential_public_key"),
                 credential_id=auth_json.get("credential_id"),
@@ -85,7 +85,7 @@ class WebAuthnMixin:
 
         try:
             response = json.loads(self.request.POST.get('data'))
-            credentials = WebauthnCredentials.objects.filter(user=user, credential_id=response['id']).first()
+            credentials = WebauthnCredential.objects.filter(user=user, credential_id=response['id']).first()
             authentication_verification = verify_authentication_response(
                 credential=response,
                 expected_challenge=self.get_challenge(),

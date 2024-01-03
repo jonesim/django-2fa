@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from modal_2fa.models import RememberDeviceCookie, WebauthnCredentials
+from modal_2fa.models import RememberDeviceCookie, WebauthnCredential, FailedLoginAttempt
 
 
 @admin.register(RememberDeviceCookie)
@@ -9,6 +9,11 @@ class RememberDeviceCookieAdmin(admin.ModelAdmin):
     readonly_fields = ('last_used', 'created')
 
 
-@admin.register(WebauthnCredentials)
+@admin.register(WebauthnCredential)
 class WebauthnCredentialsAdmin(admin.ModelAdmin):
     pass
+
+
+@admin.register(FailedLoginAttempt)
+class FailedLoginAttemptsAdmin(admin.ModelAdmin):
+    list_display = ('user', 'ip_address', 'failed_attempts')
