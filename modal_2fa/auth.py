@@ -242,7 +242,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         return self.success_response()
 
 
-class Change2FA(WebAuthnMixin, CustomiseMixin, SuccessRedirectMixin, FormModal):
+class Change2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirectMixin, FormModal):
 
     form_class = Form2FA
     modal_title = 'Change 2FA Code'
@@ -263,7 +263,8 @@ class Change2FA(WebAuthnMixin, CustomiseMixin, SuccessRedirectMixin, FormModal):
 
     @ajax_method
     def register(self, **kwargs):
-        self.register_credential(self.request.user)
+        if not self.register_credential(self.request.user):
+            return self.error_message(f'Error registering credential<br>{self.last_error}')
         return self.command_response('close')
 
     def form_valid(self, form):
