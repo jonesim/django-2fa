@@ -239,7 +239,9 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         if form.cleaned_data.get('remember'):
             return self.command_response(ajax_modal_replace(self.request, 'auth:confirm_remember',
                                                             modal_type=self.request.POST.get('modal_type')))
-        return self.success_response()
+        response = self.success_response()
+        RememberDeviceCookie.update_cookie(self.user, self.request, response)
+        return response
 
 
 class Change2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirectMixin, FormModal):

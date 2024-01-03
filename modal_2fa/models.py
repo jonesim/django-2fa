@@ -33,10 +33,20 @@ class RememberDeviceCookie(models.Model):
     def cookie_object(request, user, **kwargs):
         key = RememberDeviceCookie.cookie_key(request, user)
         if key:
-            return RememberDeviceCookie.objects.filter(key=key, user=user, **kwargs).first()
+            if ':' not in key:
+                return RememberDeviceCookie.objects.filter(key=key, user=user, **kwargs).first()
+            else:
+                return RememberDeviceCookie.objects.filter(id=key.split(':')[1], user=user, **kwargs).first()
+
+    @classmethod
+    def test_cookie(cls, request, user, **kwargs):
+        stored = cls.cookie_object(request, user, **kwargs)
+        if stored and stored.key == RememberDeviceCookie.cookie_key(request, user).split(':')[0]:
+            return True
+        return False
 
     def set_cookie(self, response):
-        response.set_cookie(RememberDeviceCookie.cookie_name(self.user), value=self.key, secure=True,
+        response.set_cookie(RememberDeviceCookie.cookie_name(self.user), value=f'{self.key}:{self.id}', secure=True,
                             expires=datetime.datetime.today() + datetime.timedelta(days=365))
 
     @staticmethod

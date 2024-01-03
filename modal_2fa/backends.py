@@ -38,7 +38,7 @@ class CookieBackend(ModelBackend):
             user = super().authenticate(request, username, password, **kwargs)
             if not user:
                 return
-            if RememberDeviceCookie.cookie_object(request, user, active=True):
+            if RememberDeviceCookie.test_cookie(request, user, active=True):
                 request.session['authentication_method'] = 'cookie'
                 return user
             elif not user_has_device(user) and self.customisation_class.user_2fa_optional(user):
