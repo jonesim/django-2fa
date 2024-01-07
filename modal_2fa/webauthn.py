@@ -76,7 +76,9 @@ class WebAuthnMixin:
         return True
 
     def get_origin(self):
-        return ('https://' if self.request.is_secure() else 'http://') + self.request.get_host()
+        if not self.request.is_secure() and self.request.get_host() == 'localhost':
+            return 'http://localhost'
+        return 'https://' + self.request.get_host()
 
     def save_challenge(self, challenge):
         self.request.session['auth_challenge'] = challenge.hex()
