@@ -1,4 +1,6 @@
 import json
+
+from django.conf import settings
 from django.utils import timezone
 
 from ajax_helpers.utils import ajax_command
@@ -17,11 +19,12 @@ except ModuleNotFoundError:
 
 class WebAuthnMixin:
 
-    rp_id = 'localhost'
     rp_name = ''
 
     def __init__(self, *args, **kwargs):
         self.last_error = None
+        self.rp_id = getattr(settings, 'WEBAUTHN_RP_ID', 'localhost')
+        self.rp_name = getattr(settings, 'WEBAUTHN_RP_NAME', self.rp_id)
         super().__init__(*args, **kwargs)
 
     def get(self, request, *args, **kwargs):
