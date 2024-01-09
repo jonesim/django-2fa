@@ -4,3 +4,5 @@
 /django_modal_2fa.egg-info/
 /.idea/
 /django_examples/db.sqlite3
+*.pyc
+.DS_Store
