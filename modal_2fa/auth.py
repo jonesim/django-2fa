@@ -18,11 +18,11 @@ from django_modals.helper import modal_button_method, modal_button, ajax_modal_r
 from django_modals.modals import FormModal, Modal
 
 from .backends import CookieBackend
-from .models import RememberDeviceCookie, FailedLoginAttempt
+from .models import RememberDeviceCookie, FailedLoginAttempt, WebauthnCredential
 from .utils import get_client_ip_address, get_custom_auth
 from .forms import CrispyPasswordChangeForm, CrispyPasswordResetForm, CrispySetPasswordForm, CrispyLoginForm, Form2FA,\
     RememberCookieForm
-from .webauthn import WebAuthnMixin
+from .webauthn import WebAuthnMixin, web_authn_script
 
 UserModel = get_user_model()
 
@@ -144,17 +144,32 @@ class ConfirmCookieModal(CustomiseMixin, SuccessRedirectMixin, FormModal):
         return self.button_refresh_modal(whole_modal=True)
 
 
-class UserDevices(CustomiseMixin, Modal):
+class UserDevices(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, Modal):
 
     modal_title = 'Authorised Devices'
 
     def modal_content(self):
         cookies = RememberDeviceCookie.objects.filter(user=self.request.user, active=True)
-        return render_to_string('modal_2fa/database_cookies.html', dict(no_title=True, cookies=cookies))
+        return (render_to_string('modal_2fa/database_cookies.html', dict(no_title=True, cookies=cookies))
+                + render_to_string('modal_2fa/webauthn_devices.html',
+                                   dict(webauthn=WebauthnCredential.objects.filter(user=self.request.user)))
+                + web_authn_script)
 
     def button_remove_device(self, **_kwargs):
         RememberDeviceCookie.objects.get(id=self.request.POST['id']).delete()
         return self.button_refresh_modal()
+
+    def button_add_webauthn(self, **kwargs):
+        return self.command_response(self.registration_command(self.request.user))
+
+    def button_remove_webauthn(self, id, **_kwargs):
+        WebauthnCredential.objects.filter(id=id).delete()
+        return self.command_response('reload')
+
+    def get_modal_buttons(self):
+        return [modal_button_method('Add Credential', 'add_webauthn', 'btn btn-success',
+                                    font_awesome='fas fa-user-plus'),
+                modal_button('Cancel', 'close', 'btn-secondary', font_awesome='fas fa-times')]
 
 
 class Modal2FARemove(CustomiseMixin, Modal):
@@ -194,10 +209,6 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
                     return HttpResponseRedirect(reverse('auth:login'))
                 return self.command_response('redirect', url=reverse('auth:login'))
         return super().dispatch(request, *args, **kwargs)
-
-    @ajax_method
-    def error(self, data, **kwargs):
-        return self.error_message(f'Error logging in with credential<br>{data}')
 
     @ajax_method
     def auth(self, **kwargs):
@@ -244,29 +255,12 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         return response
 
 
-class Change2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirectMixin, FormModal):
+class Change2FA(AjaxMessagesMixin, CustomiseMixin, SuccessRedirectMixin, FormModal):
 
     form_class = Form2FA
     modal_title = 'Change 2FA Code'
 
     def button_cancel(self, **_kwargs):
-        return self.command_response('close')
-
-    def button_add_webauthn(self, **kwargs):
-        return self.command_response(self.registration_command(self.request.user))
-
-    def button_remove_webauthn(self, **kwargs):
-        self.request.user.webauthn.all().delete()
-        return self.command_response('close')
-
-    @ajax_method
-    def error(self, data, **kwargs):
-        return self.error_message(f'Error logging in with credential<br>{data}')
-
-    @ajax_method
-    def register(self, **kwargs):
-        if not self.register_credential(self.request.user):
-            return self.error_message(f'Error registering credential<br>{self.last_error}')
         return self.command_response('close')
 
     def form_valid(self, form):

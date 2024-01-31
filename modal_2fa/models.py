@@ -63,11 +63,15 @@ class RememberDeviceCookie(models.Model):
 
 class WebauthnCredential(models.Model):
     user = models.ForeignKey(get_user_model(), on_delete=models.CASCADE, related_name='webauthn')
+    rp_id = models.CharField(max_length=80)
     credential_public_key = models.CharField(max_length=9000, blank=True, null=True)
     credential_id = models.CharField(max_length=9000, blank=True, null=True)
     created_on = models.DateTimeField(auto_now_add=True)
     last_used_on = models.DateTimeField(null=True)
     sign_count = models.IntegerField()
+
+    def __str__(self):
+        return f'{self.rp_id} {self.credential_id[:8]}'
 
 
 class FailedLoginAttempt(models.Model):

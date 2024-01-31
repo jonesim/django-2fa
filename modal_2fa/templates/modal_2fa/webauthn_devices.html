@@ -1,0 +1,22 @@
+{% load ajax_helpers modal_tags %}
+<div class="m-2">
+    {% if not webauthn %}
+        <p>No authorised credentials</p>
+    {% else %}
+        <h5>Authorised Credentials</h5>
+    <table class="table table-sm ">
+        <tr>
+            <th>Device</th>
+            <th>Last used</th>
+            <th></th>
+        </tr>
+        {% for w in webauthn %}
+            <tr>
+                <td>{{ w }}</td>
+                <td>{{ w.last_used_on|date }}</td>
+                <td>{% modal_button_method 'Remove' 'remove_webauthn' id=w.id css_class='btn btn-sm btn-outline-warning' %}</td>
+            </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+</div>

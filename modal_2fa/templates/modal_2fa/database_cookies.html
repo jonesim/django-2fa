@@ -1,14 +1,14 @@
 {% load ajax_helpers modal_tags %}
 <div class="m-2">
     {% if not no_title %}
-        <h5>Authorised Devices</h5>
+        <h5>Authorised Device Cookies</h5>
     {% endif %}
     {% if not cookies %}
-        <p>No authorised devices</p>
+        <p>No authorised device cookies</p>
     {% else %}
     <table class="table table-sm ">
         <tr>
-            <th>Device</th>
+            <th>Cookie</th>
             <th>Last used</th>
             <th></th>
         </tr>

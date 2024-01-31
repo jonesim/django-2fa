@@ -18,6 +18,8 @@ from django_modals.helper import crispy_modal_link
 from django_modals.forms import CrispyFormMixin, CrispyForm
 
 from .utils import get_custom_auth
+from .webauthn import web_authn_script
+
 UserModel = get_user_model()
 
 
@@ -63,20 +65,12 @@ class Form2FA(CrispyForm):
         return mark_safe(svg.read().decode('UTF-8'))
 
     def post_init(self, *args, **kwargs):
-        web_authn_script = HTML(f'<script src="{static("modal_2fa/webauthn.js")}"></script>')
         self.buttons = []
         if not self.device.confirmed:
             new_device = (HTML(render_to_string('modal_2fa/new_totp.html', {'svg': self.get_qr_code(self.device)})),
-                          web_authn_script)
-            if self.request.user.webauthn.exists():
-                self.buttons.append(self.button('Remove Credential',
-                                                dict(function='post_modal', button='remove_webauthn'),
-                                                'btn btn-secondary', font_awesome='fas fa-user-slash'))
-            else:
-                self.buttons.append(self.button('Add Credential', dict(function='post_modal', button='add_webauthn'),
-                                                'btn btn-secondary', font_awesome='fas fa-user-plus'))
+                          HTML(web_authn_script))
         else:
-            new_device = (web_authn_script,)
+            new_device = (HTML(web_authn_script),)
         self.buttons += [self.submit_button(),
                         self.button('Cancel', dict(function='post_modal', button='cancel'), self.cancel_class)]
         if not self.allowed_remember:

@@ -11,7 +11,7 @@ class RememberDeviceCookieAdmin(admin.ModelAdmin):
 
 @admin.register(WebauthnCredential)
 class WebauthnCredentialsAdmin(admin.ModelAdmin):
-    pass
+    list_display = ('user', 'rp_id')
 
 
 @admin.register(FailedLoginAttempt)
