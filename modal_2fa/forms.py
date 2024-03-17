@@ -68,9 +68,9 @@ class Form2FA(CrispyForm):
         self.buttons = []
         if not self.device.confirmed:
             new_device = (HTML(render_to_string('modal_2fa/new_totp.html', {'svg': self.get_qr_code(self.device)})),
-                          HTML(web_authn_script))
+                          HTML(web_authn_script()))
         else:
-            new_device = (HTML(web_authn_script),)
+            new_device = (HTML(web_authn_script()),)
         self.buttons += [self.submit_button(),
                         self.button('Cancel', dict(function='post_modal', button='cancel'), self.cancel_class)]
         if not self.allowed_remember:

@@ -153,7 +153,7 @@ class UserDevices(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, Modal):
         return (render_to_string('modal_2fa/database_cookies.html', dict(no_title=True, cookies=cookies))
                 + render_to_string('modal_2fa/webauthn_devices.html',
                                    dict(webauthn=WebauthnCredential.objects.filter(user=self.request.user)))
-                + web_authn_script)
+                + web_authn_script())
 
     def button_remove_device(self, **_kwargs):
         RememberDeviceCookie.objects.get(id=self.request.POST['id']).delete()

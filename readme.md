@@ -2,7 +2,7 @@
 
 Adds to Django's authentication with 2FA option
 
-* 2FA with Authenticator app using HOTP
+* 2FA with Authenticator app using TOTP
 * Use WebAuthn with Windows Hello, Face ID, Yubikey etc
 * Lock out by ip and username for too many failed attempts
 * Customisable Bootstrap 4 Modal interface with django-nested-modals

@@ -10,7 +10,12 @@ from webauthn.helpers import bytes_to_base64url
 
 from modal_2fa.models import WebauthnCredential
 
-web_authn_script = f'<script src="{static("modal_2fa/webauthn.js")}"></script>'
+
+def web_authn_script():
+    try:
+         return f'<script src="{static("modal_2fa/webauthn.js")}"></script>'
+    except ValueError:
+        return ''
 
 try:
     from webauthn import (generate_registration_options, options_to_json, verify_registration_response,
