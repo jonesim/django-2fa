@@ -1,3 +1,4 @@
+from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views.generic import TemplateView
 from ajax_helpers.mixins import AjaxHelpers
 from django_menus.menu import MenuMixin
@@ -22,3 +23,11 @@ class Basic(MainMenuTemplateView):
 
     def setup_menu(self):
         super().setup_menu()
+
+
+class ProtectedPage(LoginRequiredMixin, Basic):
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['page_title'] = 'Protected Page'
+        return context

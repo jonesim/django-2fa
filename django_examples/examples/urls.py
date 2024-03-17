@@ -6,6 +6,7 @@ import examples.views as views
 
 urlpatterns = [
     path('', RedirectView.as_view(url='Basic')),
-    path('Basic', views.Basic.as_view(), name='basic'),
-    path('user-table', UserTable.as_view()),
+    path('Basic/', views.Basic.as_view(), name='basic'),
+    path('Protected/', views.ProtectedPage.as_view(), name='protected'),
+    path('user-table/', UserTable.as_view()),
 ]
