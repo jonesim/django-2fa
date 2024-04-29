@@ -1,6 +1,9 @@
-from django.contrib.auth import get_user_model
+from ajax_helpers.mixins import AjaxHelpers
+from django.conf import settings
+from django.contrib.auth import get_user_model, logout
 from django.contrib.auth.forms import PasswordResetForm
 from django.contrib.auth.views import PasswordResetView
+from django.views import View
 
 from django_modals.modals import ModelFormModal, Modal
 from django_modals.helper import modal_button, modal_button_method
@@ -47,3 +50,13 @@ class ModalInviteUser(CustomiseMixin, Modal, PasswordResetView):
         form.is_valid()
         self.form_valid(form)
         return self.command_response('close')
+
+
+class LogoutUser(AjaxHelpers, View):
+
+    def post(self, request, **kwargs):
+        logout(request)
+        if settings.LOGOUT_REDIRECT_URL:
+            return self.command_response('redirect', url=settings.LOGOUT_REDIRECT_URL)
+        else:
+            return self.command_response('reload')

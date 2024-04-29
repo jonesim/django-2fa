@@ -33,6 +33,7 @@ pattern_dict = {
     'invite_user': ('user_invite/<uidb64>/<token>/', auth.UserInvite),
     'user': ('user/<slug>', users.ModalUserForm),
     'invite_user_confirm': ('confirm_invite/<slug:slug>/', users.ModalInviteUser),
+    'logout_user': ('logout-user/', users.LogoutUser),
 }
 
 

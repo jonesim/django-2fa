@@ -1,3 +1,4 @@
+from ajax_helpers.utils import ajax_command
 from django.urls import reverse, NoReverseMatch
 from django_menus.menu import MenuItem, DividerItem
 
@@ -37,7 +38,8 @@ def add_auth_menu(view):
                 pass
 
         dropdown += [
-            MenuItem('auth:logout', font_awesome='fas fa-sign-out-alt'),
+            MenuItem(ajax_command('ajax_post', url=reverse('auth:logout_user')), 'Logout',
+                     link_type=MenuItem.AJAX_COMMAND, font_awesome='fas fa-sign-out-alt'),
         ]
         view.add_menu('user_menu', alignment='right').add_items(
             MenuItem(font_awesome='fas fa-user', menu_display='', dropdown=dropdown, placement='bottom-end'),
