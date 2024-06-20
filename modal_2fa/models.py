@@ -84,8 +84,10 @@ class FailedLoginAttempt(models.Model):
 
     @classmethod
     def check_request(cls, request, user):
-        results = cls.objects.filter(Q(ip_address=get_client_ip_address(request)) | Q(user=user))
-
+        if user:
+            results = cls.objects.filter(Q(ip_address=get_client_ip_address(request)) | Q(user=user))
+        else:
+            results = cls.objects.filter(Q(ip_address=get_client_ip_address(request)))
         for r in results:
             if r.locked_time and r.locked_time < datetime.datetime.now():
                 return 'Time out until' + str(r.locked_time)
