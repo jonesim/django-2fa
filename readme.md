@@ -29,7 +29,7 @@ Adds to Django's authentication with 2FA option
 
 
 **remove** 
-    ``'django.contrib.auth'``
+    ``'django.contrib.admin'``
 from INSTALLED_APPS
 
 ### urls
