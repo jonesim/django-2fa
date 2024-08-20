@@ -205,7 +205,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
             try:
                 self.user = CookieBackend.get_part_login_user(request)
             except ObjectDoesNotExist:
-                if not self.request.is_ajax():
+                if not is_ajax(self.request):
                     return HttpResponseRedirect(reverse('auth:login'))
                 return self.command_response('redirect', url=reverse('auth:login'))
         return super().dispatch(request, *args, **kwargs)
