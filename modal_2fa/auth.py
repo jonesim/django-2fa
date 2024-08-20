@@ -213,7 +213,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
     @ajax_method
     def auth(self, **kwargs):
         if self.check_authentication(self.user):
-            auth_login(self.request, self.user)
+            auth_login(self.request, self.user, backend='modal_2fa.auth.CookieBackend')
             self.request.session['authentication_method'] = '2fa'
             return self.success_response()
         else:
@@ -246,7 +246,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         return self.command_response('show_modal', modal=reverse('auth:login'))
 
     def form_valid(self, form):
-        auth_login(self.request, self.user)
+        auth_login(self.request, self.user, backend='modal_2fa.auth.CookieBackend')
         if form.cleaned_data.get('remember'):
             return self.command_response(ajax_modal_replace(self.request, 'auth:confirm_remember',
                                                             modal_type=self.request.POST.get('modal_type')))
