@@ -1,4 +1,5 @@
 from ajax_helpers.mixins import ajax_method
+from ajax_helpers.utils import is_ajax
 from django.conf import settings
 from django.core.handlers.wsgi import WSGIRequest
 from django.contrib.auth import login as auth_login, logout as auth_logout
