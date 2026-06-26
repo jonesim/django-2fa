@@ -15,7 +15,7 @@ def add_auth_menu(view):
             MenuItem('', menu_display=f'<b style="color:#495057">{user_display(view.request.user)}</b>', disabled=True),
             DividerItem()
         ]
-        if view.request.session.get('authentication_method') in ['2fa', 'cookie']:
+        if view.request.session.get('authentication_method') in ['2fa', 'cookie', 'microsoft']:
             dropdown += [('auth:remove_2fa', 'Remove 2FA'), ('auth:change_2fa', 'Change 2FA'),
                          ('auth:user_devices', 'Authorised devices')]
         else:

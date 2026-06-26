@@ -3,9 +3,10 @@ from django.contrib.auth.views import PasswordResetView
 from .urls import make_url_patterns, pattern_dict
 from .auth import Modal2FA
 from .models import RememberDeviceCookie
+from .microsoft import MicrosoftCustomiseMixin, register_microsoft_urls
 
 
-class CustomiseAuth:
+class CustomiseAuth(MicrosoftCustomiseMixin):
 
     invite_email_template = 'modal_2fa/emails/invite.html'
     invite_txt_email_template = 'modal_2fa/emails/invite_txt.html'
@@ -25,6 +26,7 @@ class CustomiseAuth:
         if include_admin:
             from modal_2fa.user_admin import UserAdminModal
             pattern_dict['user_admin_modal'] = ('user-admin-modal/', UserAdminModal)
+        register_microsoft_urls(pattern_dict)
         patterns.update(cls.override_views())
         return make_url_patterns(patterns)
 

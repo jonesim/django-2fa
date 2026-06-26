@@ -18,6 +18,7 @@ from django_modals.helper import crispy_modal_link
 from django_modals.forms import CrispyFormMixin, CrispyForm
 
 from .utils import get_custom_auth
+from .microsoft import microsoft_configured, microsoft_login_button
 from .webauthn import web_authn_script
 
 UserModel = get_user_model()
@@ -42,10 +43,14 @@ class CrispyLoginForm(CrispyFormMixin, AuthenticationForm):
             self.no_buttons = True
             return [HTML(f'<div class="alert alert-danger">{self.locked}</div>')]
         self.buttons.append(self.submit_button())
-        return (
+        layout = [
             Field('username', 'password'),
             crispy_modal_link('auth:reset_password', 'Forgot Password?', div=True, div_classes='text-center'),
-        )
+        ]
+        if microsoft_configured():
+            # Full-page navigation (OAuth needs a real redirect), not an AJAX modal command.
+            layout.append(HTML(microsoft_login_button()))
+        return tuple(layout)
 
 
 class Form2FA(CrispyForm):
