@@ -81,25 +81,29 @@ class FailedLoginAttempt(models.Model):
 
     user = models.ForeignKey(get_user_model(), on_delete=models.CASCADE, related_name='failed_login', null=True,
                              blank=True)
-    ip_address = models.CharField(max_length=20, null=True, blank=True)
+    ip_address = models.CharField(max_length=45, null=True, blank=True)
     failed_attempts = models.IntegerField()
     locked_time = models.DateTimeField(null=True, blank=True)
 
     @classmethod
     def check_request(cls, request, user):
+        now = datetime.datetime.now()
         if user:
             results = cls.objects.filter(Q(ip_address=get_client_ip_address(request)) | Q(user=user))
         else:
             results = cls.objects.filter(Q(ip_address=get_client_ip_address(request)))
         for r in results:
-            if r.locked_time and r.locked_time < datetime.datetime.now():
-                return 'Time out until' + str(r.locked_time)
-            if r.user_id:
-                if r.failed_attempts > getattr(settings, 'AUTHENTICATION_USER_FAILED_ATTEMPTS', 10):
+            if not r.locked_time:
+                continue
+            if r.locked_time > now:
+                # Lockout window is still in effect.
+                if r.user_id:
                     return 'Account locked'
-            else:
-                if r.failed_attempts > getattr(settings, 'AUTHENTICATION_IP_FAILED_ATTEMPTS', 20):
-                    return f'IP Blocked {get_client_ip_address(request)}'
+                return f'IP Blocked {get_client_ip_address(request)}'
+            # The window has elapsed: clear the lock so the next window starts fresh.
+            r.failed_attempts = 0
+            r.locked_time = None
+            r.save()
         return True
 
     @classmethod
@@ -108,23 +112,23 @@ class FailedLoginAttempt(models.Model):
 
     @classmethod
     def add_failed_attempt(cls, request, user):
+        lockout_time = (datetime.datetime.now() +
+                        datetime.timedelta(seconds=getattr(settings, 'AUTHENTICATION_LOCKOUT_SECONDS', 30)))
         ip_address = get_client_ip_address(request)
-        ip_fail = cls.objects.filter(ip_address=ip_address).first()
+        ip_fail = cls.objects.filter(ip_address=ip_address, user__isnull=True).first()
         if ip_fail:
             ip_fail.failed_attempts += 1
-            if ip_fail.failed_attempts > getattr(settings, 'AUTHENTICATION_IP_FAILED_LOCKOUT', 9999):
-                ip_fail.locked_time = (datetime.datetime.now() +
-                                       datetime.timedelta(seconds=settings.get('AUTHENTICATION_LOCKOUT_SECONDS', 30)))
+            if ip_fail.failed_attempts > getattr(settings, 'AUTHENTICATION_IP_FAILED_ATTEMPTS', 20):
+                ip_fail.locked_time = lockout_time
             ip_fail.save()
         else:
             cls(ip_address=ip_address, failed_attempts=1).save()
-        user_fail = cls.objects.filter(user=user).first()
-        if user_fail:
-            user_fail.failed_attempts += 1
-            if user_fail.failed_attempts > getattr(settings, 'AUTHENTICATION_USER_FAILED_LOCKOUT', 9999):
-                user_fail.locked_time = (datetime.datetime.now() +
-                                         datetime.timedelta(seconds=getattr(settings,
-                                                                            'AUTHENTICATION_LOCKOUT_SECONDS', 30)))
-            user_fail.save()
-        else:
-            cls(user=user, failed_attempts=1).save()
+        if user:
+            user_fail = cls.objects.filter(user=user).first()
+            if user_fail:
+                user_fail.failed_attempts += 1
+                if user_fail.failed_attempts > getattr(settings, 'AUTHENTICATION_USER_FAILED_ATTEMPTS', 10):
+                    user_fail.locked_time = lockout_time
+                user_fail.save()
+            else:
+                cls(user=user, failed_attempts=1).save()
