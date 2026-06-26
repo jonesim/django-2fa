@@ -113,13 +113,22 @@ class WebAuthnMixin:
             response = json.loads(self.request.POST.get('data'))
             credentials = WebauthnCredential.objects.filter(user=user, credential_id=response['id'],
                                                             rp_id=self.rp_id).first()
+            if credentials is None:
+                # No registered credential matches the asserted id for this user/rp:
+                # fail as a clean auth error rather than an AttributeError below.
+                self.last_error = 'Unknown credential'
+                return False
             authentication_verification = verify_authentication_response(
                 credential=response,
                 expected_challenge=self.get_challenge(),
                 expected_origin=self.get_origin(),
                 expected_rp_id=self.rp_id,
                 credential_public_key=base64url_to_bytes(credentials.credential_public_key),
-                credential_current_sign_count=0
+                # Feed the stored counter back in so a cloned/rolled-back authenticator
+                # (one reporting a counter <= the last seen value) is rejected. When an
+                # authenticator doesn't support counters both sides stay 0 and the check
+                # is skipped, as before.
+                credential_current_sign_count=credentials.sign_count,
             )
             credentials.sign_count = authentication_verification.new_sign_count
             credentials.last_used_on = timezone.now()
