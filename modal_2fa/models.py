@@ -49,7 +49,10 @@ class RememberDeviceCookie(models.Model):
         return False
 
     def set_cookie(self, response):
+        # This is a 2FA-bypass token: keep it out of JS (httponly) and off
+        # cross-site requests (samesite) in addition to https-only (secure).
         response.set_cookie(RememberDeviceCookie.cookie_name(self.user), value=f'{self.key}:{self.id}', secure=True,
+                            httponly=True, samesite='Lax',
                             expires=datetime.datetime.today() + datetime.timedelta(days=365))
 
     @staticmethod
