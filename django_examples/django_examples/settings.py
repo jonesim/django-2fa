@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/3.1/ref/settings/
 """
 
+import os
 from pathlib import Path
 from modal_2fa.settings_helper import modal_2fa_apps_admin
 try:
@@ -37,6 +38,7 @@ ALLOWED_HOSTS = []
 
 INSTALLED_APPS = [
     # 'django.contrib.admin',
+    *modal_2fa_apps_admin,
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
@@ -47,11 +49,11 @@ INSTALLED_APPS = [
     'crispy_forms',
     'examples',
     'ajax_helpers',
-    *modal_2fa_apps_admin,
     'django_menus',
     'show_src_code',
     'celery',
     'djcelery_email',
+    'django_extensions'
 ]
 
 MIDDLEWARE = [
@@ -132,9 +134,11 @@ USE_TZ = False
 
 STATIC_URL = '/static/'
 
-LOGIN_URL = 'admin/login/'
+LOGIN_URL = 'auth/login/'
 LOGIN_REDIRECT_URL = '/'
 LOGOUT_REDIRECT_URL = '/'
+
+WEBAUTHN_RP_ID = 'localhost'
 
 AUTHENTICATION_CUSTOMISATION = 'examples.customise.ExampleCustomise'
 AUTHENTICATION_BACKENDS = ['modal_2fa.auth.CookieBackend']
@@ -159,3 +163,27 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 
 EMAIL_BACKEND = 'djcelery_email.backends.CeleryEmailBackend'
+DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
+
+DEFENDER_REDIS_URL = 'redis://redis:6379'
+DEFENDER_LOGIN_FAILURE_LIMIT = 6
+DEFENDER_COOLOFF_TIME = 10
+# The demo serves runserver directly with no proxy in front, so X-Forwarded-For
+# is untrusted here. Set True only when a trusted reverse proxy sets that header.
+BEHIND_REVERSE_PROXY = False
+
+# Behind a reverse proxy, set the number of trusted hops so the real client IP is
+# read from X-Forwarded-For (REMOTE_ADDR would otherwise be the proxy container).
+#   Traefik only:            AUTHENTICATION_TRUSTED_PROXY_COUNT = 1
+#   Cloudflare/LB -> Traefik: AUTHENTICATION_TRUSTED_PROXY_COUNT = 2
+# AUTHENTICATION_TRUSTED_PROXY_COUNT = 1
+
+
+# Read the Microsoft/Entra config from the environment (see .env).
+MS_CLIENT_ID = os.environ.get('MS_CLIENT_ID')
+MS_TENANT_ID = os.environ.get('MS_TENANT_ID')
+MS_CLIENT_SECRET = os.environ.get('MS_CLIENT_SECRET')
+
+# Must EXACTLY match a Web redirect URI registered in the Azure App Registration,
+# and point at the library's callback route (auth:ms_redirect).
+MS_REDIRECT_URI='http://localhost:8010/auth/microsoft/redirect'

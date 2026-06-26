@@ -24,6 +24,17 @@ class Basic(MainMenuTemplateView):
     def setup_menu(self):
         super().setup_menu()
 
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        if self.request.session.get('authentication_method') == 'microsoft':
+            claims = self.request.session.get('ms_claims') or {}
+            # Render list-valued claims (e.g. amr) readably rather than as a repr.
+            context['ms_claims'] = {
+                key: ', '.join(map(str, value)) if isinstance(value, list) else value
+                for key, value in sorted(claims.items())
+            }
+        return context
+
 
 class ProtectedPage(LoginRequiredMixin, Basic):
 

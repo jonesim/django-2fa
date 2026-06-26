@@ -26,3 +26,12 @@ class ExampleCustomise(CustomiseAuth):
     @staticmethod
     def user_2fa_optional(user):
         return True
+
+    @staticmethod
+    def microsoft_satisfies_2fa(claims):
+        # The Entra ID token carries no amr/auth_time, so MFA can't be read from
+        # it. We trust a successful single-tenant Microsoft sign-in as the second
+        # factor on the assumption that the tenant enforces MFA via Conditional
+        # Access. If that assumption ever fails, switch to an Entra authentication
+        # context (acr/amr) and verify it here instead.
+        return True

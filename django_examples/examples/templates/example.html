@@ -7,6 +7,18 @@
         {% show_modal 'auth:user' button='Create' %}
         <br>
         {{ menus.modals.render }}
+
+        {% if ms_claims %}
+            <h5 class="mt-4">Microsoft / Entra ID token claims</h5>
+            <table class="table table-sm table-striped w-auto">
+                <thead><tr><th>Claim</th><th>Value</th></tr></thead>
+                <tbody>
+                {% for key, value in ms_claims.items %}
+                    <tr><td><code>{{ key }}</code></td><td>{{ value }}</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        {% endif %}
     </div>
 
 {% endblock %}
