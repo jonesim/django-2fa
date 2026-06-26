@@ -101,13 +101,25 @@ class MicrosoftCustomiseMixin:
         return cls.microsoft_allow_guests or not cls.microsoft_is_guest(claims)
 
     @staticmethod
-    def microsoft_user(claims):
+    def microsoft_username(claims):
+        """Extract and normalise the lookup key from verified Microsoft claims.
+
+        Entra returns the UPN/email in mixed case, but these are case-insensitive
+        identifiers, so the key is lowercased to match how usernames are stored
+        locally. Override to read a different claim or apply different normalisation.
+        """
+        username = claims.get('preferred_username') or claims.get('email')
+        return username.lower() if username else None
+
+    @classmethod
+    def microsoft_user(cls, claims):
         """Map verified Microsoft ID-token claims to an existing Django user.
 
         Match-existing-only: returns ``None`` (sign-in fails) when no user matches.
-        Override to provision users or match on a different field.
+        Override to provision users, or override :meth:`microsoft_username` to match
+        on a different field / normalisation.
         """
-        username = claims.get('preferred_username') or claims.get('email')
+        username = cls.microsoft_username(claims)
         if not username:
             return None
         try:
