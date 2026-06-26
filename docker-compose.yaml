@@ -7,7 +7,7 @@ volumes:
       device: tmpfs
 
 services:
- django: &django
+ django_2fa: &django
   build:
    context: ./
   volumes:
@@ -16,31 +16,34 @@ services:
    - /var/run/docker.sock:/var/run/docker.sock
    # - ../django-modals/django_modals:/libraries/django_modals
    - celery:/celery
+  #command: bash -c "python manage.py migrate && python manage.py runserver_plus 0.0.0.0:8010 --cert-file cert.pem --key-file key.pem"
   command: bash -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8010"
 
   environment:
    - PYTHONPATH=/libraries
+   # Pass the Microsoft/Entra config through from the host env (see .env).
+   - MS_CLIENT_ID=${MS_CLIENT_ID:-}
+   - MS_TENANT_ID=${MS_TENANT_ID:-}
+   - MS_CLIENT_SECRET=${MS_CLIENT_SECRET:-}
   ports:
    - 8010:8010
   depends_on:
     - redis
 
  redis:
-   restart: always
-   image: redis:5.0.7-alpine
+   image: redis:7-alpine
 
  celery:
    <<: *django
-   image: havbase_celeryworker
    command: celery -A django_examples worker -l info
    ports:
      - '5556'
    labels:
      - "none"
 
- flower:
-  <<: *django
-  image: flower
-  command: celery -A django_examples flower
-  ports:
-    - 5555:5555
+# flower:
+#  <<: *django
+#  image: flower
+#  command: celery -A django_examples flower
+#  ports:
+#    - 5555:5555
