@@ -8,6 +8,7 @@ from django.contrib.auth.views import PasswordResetConfirmView, LoginView, Passw
 from django.db.models import ObjectDoesNotExist
 from django.http import HttpResponseRedirect
 from django.urls import reverse
+from django.utils.http import urlencode
 from django.utils.safestring import mark_safe
 from django.template.loader import render_to_string
 from django_modals.messages import AjaxMessagesMixin
@@ -20,7 +21,7 @@ from django_modals.modals import FormModal, Modal
 
 from .backends import CookieBackend
 from .models import RememberDeviceCookie, FailedLoginAttempt, WebauthnCredential
-from .utils import get_client_ip_address, get_custom_auth
+from .utils import get_client_ip_address, get_custom_auth, safe_redirect_url
 from .forms import CrispyPasswordChangeForm, CrispyPasswordResetForm, CrispySetPasswordForm, CrispyLoginForm, Form2FA,\
     RememberCookieForm
 from .webauthn import WebAuthnMixin, web_authn_script
@@ -36,7 +37,8 @@ class CustomiseMixin:
 
 
 def auth_2fa_url(request):
-    query_string = f'?next={request.GET["next"]}' if 'next' in request.GET else ''
+    safe_next = safe_redirect_url(request, request.GET.get('next'))
+    query_string = '?' + urlencode({'next': safe_next}) if safe_next else ''
     return reverse('auth:auth_2fa') + query_string
 
 
@@ -45,9 +47,10 @@ class SuccessRedirectMixin:
     request: WSGIRequest
 
     def success_response(self):
-        if 'next' in self.request.GET:
+        safe_next = safe_redirect_url(self.request, self.request.GET.get('next'))
+        if safe_next:
             # noinspection PyUnresolvedReferences
-            return self.command_response('redirect', url=self.request.GET['next'])
+            return self.command_response('redirect', url=safe_next)
         elif self.request.POST.get('modal_type') == 'no-parent':
             # noinspection PyUnresolvedReferences
             return self.command_response('redirect', url=settings.LOGIN_REDIRECT_URL)
