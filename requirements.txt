@@ -15,3 +15,4 @@ django-celery-email
 webauthn==2.1.0
 django-extensions 
 Werkzeug
+msal>=1.28

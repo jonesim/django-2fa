@@ -20,4 +20,5 @@ setuptools.setup(
     ],
     python_requires='>=3.6',
     install_requires=['django-nested-modals', 'qrcode', 'django-otp', 'webauthn>=2.0.0'],
+    extras_require={'microsoft': ['msal>=1.28']},
 )
