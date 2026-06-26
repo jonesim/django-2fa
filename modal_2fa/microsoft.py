@@ -198,7 +198,20 @@ class MsAuthMixin:
 
     @staticmethod
     def redirect_uri(request):
-        return getattr(settings, 'MS_REDIRECT_URI', None) or request.build_absolute_uri(reverse('auth:ms_redirect'))
+        explicit = getattr(settings, 'MS_REDIRECT_URI', None)
+        if explicit:
+            return explicit
+        uri = request.build_absolute_uri(reverse('auth:ms_redirect'))
+        # Behind a TLS-terminating proxy (e.g. Docker/Traefik/Cloudflare) the
+        # container is reached over plain HTTP, so request.scheme is 'http' and
+        # build_absolute_uri yields an http:// redirect URI. Azure rejects that:
+        # every non-localhost redirect URI it accepts must be https. Force the
+        # scheme up to https for non-local hosts so the generated URI matches the
+        # one registered in Azure without relying on the proxy forwarding
+        # X-Forwarded-Proto. (Set MS_REDIRECT_URI explicitly to override entirely.)
+        if uri.startswith('http://') and request.get_host().split(':')[0] not in ('localhost', '127.0.0.1'):
+            uri = 'https://' + uri[len('http://'):]
+        return uri
 
 
 class MsLoginView(MsAuthMixin, View):
