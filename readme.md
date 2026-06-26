@@ -15,7 +15,7 @@ brute-force lockout, email invites, and optional "Sign in with Microsoft".
 * **User onboarding** – email invitations to set a password, plus a forgotten-password reset flow
 * **Customisable** – restyle every modal and override behaviour from one class
 
-![login modal](docs/login.png)
+![login modal](https://raw.githubusercontent.com/jonesim/django-2fa/main/docs/login.png)
 
 ## Requirements
 
