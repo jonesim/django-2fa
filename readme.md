@@ -64,7 +64,8 @@ production (`localhost` is exempt for development).
 
 All routes mount under `auth/` with the `auth` namespace — reverse them as
 `'auth:login'`, `'auth:auth_2fa'`, `'auth:user_devices'`, etc. Pass
-`include_admin=False` to leave out the bundled user-admin modal.
+`include_admin=False` to leave out the bundled user-admin and security-admin
+modals.
 
 ## Authentication flow
 
@@ -101,6 +102,25 @@ is read (spoof-safely) from `X-Forwarded-For`:
 Default is `0` (no proxy — `REMOTE_ADDR` is used and `X-Forwarded-For` is ignored,
 since it would otherwise be client-spoofable). `BEHIND_REVERSE_PROXY = True` is
 accepted as a legacy alias for a count of `1`.
+
+## Security admin (superusers)
+
+With `include_admin=True`, a **Security Admin** modal is added at
+`auth:security_admin_modal` and linked from the user dropdown for superusers only.
+It gives an in-app alternative to the `clear_failed_logins` command and the Django
+admin for two operational tasks:
+
+* **Failed login attempts** — lists every `FailedLoginAttempt` (by username and by
+  IP) with its attempt count and lock status; currently-locked rows are
+  highlighted. **Clear** removes a row, which both lifts the lockout and resets the
+  counter — use it to free a legitimate user who has locked themselves out.
+* **Active sessions** — lists signed-in users decoded from their sessions, with the
+  authentication method and expiry. **Sign out** deletes the session, ending it
+  immediately — useful for revoking a session you believe is compromised.
+
+Access is gated on `is_superuser`. The active-sessions list reads server-side
+session rows, so it requires the database session backend (Django's default); with
+a cache-only `SESSION_ENGINE` the list will be empty.
 
 ## Optional: Sign in with Microsoft / Entra
 

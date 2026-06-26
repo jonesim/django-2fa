@@ -37,6 +37,17 @@ def add_auth_menu(view):
             except NoReverseMatch:
                 pass
 
+        if view.request.user.is_superuser:
+            try:
+                security_admin = reverse('auth:security_admin_modal')
+                dropdown += [
+                    MenuItem(security_admin, link_type=MenuItem.HREF, menu_display='Security Admin',
+                             font_awesome='fas fa-shield-alt'),
+                    DividerItem()
+                ]
+            except NoReverseMatch:
+                pass
+
         dropdown += [
             MenuItem(ajax_command('ajax_post', url=reverse('auth:logout_user')), 'Logout',
                      link_type=MenuItem.AJAX_COMMAND, font_awesome='fas fa-sign-out-alt'),

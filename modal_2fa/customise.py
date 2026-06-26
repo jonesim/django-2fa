@@ -25,7 +25,11 @@ class CustomiseAuth(MicrosoftCustomiseMixin):
         patterns = pattern_dict
         if include_admin:
             from modal_2fa.user_admin import UserAdminModal
+            from modal_2fa.security_admin import SecurityAdminModal, ClearLockoutModal, ForceLogoutModal
             pattern_dict['user_admin_modal'] = ('user-admin-modal/', UserAdminModal)
+            pattern_dict['security_admin_modal'] = ('security-admin-modal/', SecurityAdminModal)
+            pattern_dict['clear_lockout'] = ('clear-lockout/<slug:slug>/', ClearLockoutModal)
+            pattern_dict['force_logout'] = ('force-logout/<slug:slug>/', ForceLogoutModal)
         register_microsoft_urls(pattern_dict)
         patterns.update(cls.override_views())
         return make_url_patterns(patterns)
