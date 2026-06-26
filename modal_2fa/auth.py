@@ -200,16 +200,28 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         self.user = None
 
     def dispatch(self, request, *args, **kwargs):
-        if self.request.user.is_authenticated:
-            self.user = self.request.user
-        else:
+        if CookieBackend.get_part_login(request):
+            # A login is in progress: the part-login user takes precedence over an
+            # already-authenticated one (e.g. opening admin while still signed in
+            # via Microsoft). Drop the stale session so 2FA completes as the right
+            # user and auth_login doesn't flush the new authentication_method.
             try:
                 self.user = CookieBackend.get_part_login_user(request)
             except ObjectDoesNotExist:
-                if not is_ajax(self.request):
-                    return HttpResponseRedirect(reverse('auth:login'))
-                return self.command_response('redirect', url=reverse('auth:login'))
+                return self._login_redirect()
+            if request.user.is_authenticated and request.user.pk != self.user.pk:
+                auth_logout(request)
+                CookieBackend.set_part_login(request, self.user.get_username())
+        elif self.request.user.is_authenticated:
+            self.user = self.request.user
+        else:
+            return self._login_redirect()
         return super().dispatch(request, *args, **kwargs)
+
+    def _login_redirect(self):
+        if not is_ajax(self.request):
+            return HttpResponseRedirect(reverse('auth:login'))
+        return self.command_response('redirect', url=reverse('auth:login'))
 
     @ajax_method
     def auth(self, **kwargs):
@@ -241,7 +253,9 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
                     allowed_remember=self.allowed_remember(self.user))
 
     def button_cancel(self, **_kwargs):
-        del self.request.session[CookieBackend.part_login_key]
+        # Safe pop: button_cancel is reachable with no part_login set (an already
+        # authenticated user opening the 2FA modal), where a bare del would KeyError.
+        CookieBackend.delete_part_login(self.request)
         auth_logout(self.request)
         self.add_command('close')
         return self.command_response('show_modal', modal=reverse('auth:login'))
@@ -306,6 +320,12 @@ class ModalLoginView(CustomiseMixin, SuccessRedirectMixin, FormModal, LoginView)
     def dispatch(self, request, *args, **kwargs):
         if 'username' in request.POST:
             self._user = UserModel.objects.filter(username=self.request.POST['username']).first()
+            # Logging in as a different user while already authenticated: drop the
+            # current session first so the new login (and any 2FA step) can't bind
+            # to the previously signed-in identity.
+            if (request.user.is_authenticated and self._user is not None
+                    and request.user.pk != self._user.pk):
+                auth_logout(request)
         check_login = FailedLoginAttempt.check_request(request, self._user)
         if check_login != True:
             self._locked = check_login
