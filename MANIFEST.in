@@ -1,2 +1,0 @@
-recursive-include modal_2fa *
-recursive-exclude modal_2fa *.pyc

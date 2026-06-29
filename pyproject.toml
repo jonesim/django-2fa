@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "django-modal-2fa"
+version = "0.0.6"
+description = "Django app to implement two factor authentication with bootstrap modals"
+readme = "readme.md"
+authors = [{ name = "Ian Jones" }]
+license = { text = "MIT" }
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "django-nested-modals",
+    "qrcode",
+    "django-otp",
+    "webauthn>=2.0.0",
+]
+
+[project.optional-dependencies]
+microsoft = ["msal>=1.28"]
+
+[project.urls]
+Homepage = "https://github.com/jonesim/django-2fa"
+
+[tool.setuptools.packages.find]
+include = ["modal_2fa*"]
+
+[tool.setuptools.package-data]
+modal_2fa = ["templates/**/*", "static/**/*"]
