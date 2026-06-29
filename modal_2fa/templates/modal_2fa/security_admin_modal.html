@@ -1,0 +1,46 @@
+{% load modal_tags %}
+
+<h5>Failed login attempts</h5>
+{% if failed_attempts %}
+    <table class="table table-sm">
+        <thead>
+            <tr><th>User</th><th>IP address</th><th>Attempts</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for row in failed_attempts %}
+                <tr{% if row.locked %} class="table-danger"{% endif %}>
+                    <td>{{ row.who }}</td>
+                    <td>{{ row.ip }}</td>
+                    <td>{{ row.attempts }}</td>
+                    <td>{% if row.locked %}Locked until {{ row.locked_time }}{% else %}&mdash;{% endif %}</td>
+                    <td class="text-right">{{ row.action }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% else %}
+    <p class="text-muted">No failed login attempts recorded.</p>
+{% endif %}
+
+<hr>
+
+<h5>Active sessions</h5>
+{% if sessions %}
+    <table class="table table-sm">
+        <thead>
+            <tr><th>User</th><th>Method</th><th>Expires</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for row in sessions %}
+                <tr>
+                    <td>{{ row.who }}</td>
+                    <td>{{ row.method }}</td>
+                    <td>{{ row.expires }}</td>
+                    <td class="text-right">{{ row.action }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% else %}
+    <p class="text-muted">No active sessions.</p>
+{% endif %}
