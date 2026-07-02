@@ -38,6 +38,11 @@ class CookieBackend(ModelBackend):
             user = super().authenticate(request, username, password, **kwargs)
             if not user:
                 return
+            if not self.customisation_class.password_login_allowed(user):
+                # Entra-only user: refuse the password path entirely. The Microsoft
+                # backend authenticates from verified claims (no password), so SSO
+                # sign-in for this same user is unaffected.
+                return None
             if RememberDeviceCookie.test_cookie(request, user, active=True):
                 request.session['authentication_method'] = 'cookie'
                 return user

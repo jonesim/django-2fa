@@ -25,6 +25,7 @@ from .utils import get_client_ip_address, get_custom_auth, safe_redirect_url
 from .forms import CrispyPasswordChangeForm, CrispyPasswordResetForm, CrispySetPasswordForm, CrispyLoginForm, Form2FA,\
     RememberCookieForm
 from .webauthn import WebAuthnMixin, web_authn_script
+from .microsoft import microsoft_configured
 
 UserModel = get_user_model()
 
@@ -324,9 +325,12 @@ class ModalLoginView(CustomiseMixin, SuccessRedirectMixin, FormModal, LoginView)
     modal_title = 'Sign In'
     no_header_x = True
 
+    sso_only_message = 'This account must sign in with Microsoft.'
+
     def __init__(self, *args, **kwargs):
         self._user = None
         self._locked = False
+        self._sso_only = False
         super().__init__(*args, **kwargs)
 
     def button_logout(self, **_kwargs):
@@ -335,8 +339,14 @@ class ModalLoginView(CustomiseMixin, SuccessRedirectMixin, FormModal, LoginView)
 
     def form_invalid(self, form):
         if CookieBackend.get_part_login(self.request):
-            FailedLoginAttempt.clear_failed_attempts(self.request, self._user)
+            # Correct password, advancing to 2FA: don't add an attempt (the
+            # password was right), but don't clear the counter either -- prior
+            # failures must carry into the 2FA stage so its throttle isn't reset.
             return self.two_factor_response()
+        if self._sso_only:
+            # Blocked by policy, not a wrong password: show the SSO message but
+            # don't count it toward the brute-force lockout.
+            return super().form_invalid(form)
         FailedLoginAttempt.add_failed_attempt(self.request, self._user)
         return super().form_invalid(form)
 
@@ -349,6 +359,12 @@ class ModalLoginView(CustomiseMixin, SuccessRedirectMixin, FormModal, LoginView)
             if (request.user.is_authenticated and self._user is not None
                     and request.user.pk != self._user.pk):
                 auth_logout(request)
+            # Entra-only account attempting a password login: surface a clear
+            # message (only when Microsoft sign-in is actually configured, so the
+            # button we render has a route to point at).
+            if (self._user is not None and 'password' in request.POST and microsoft_configured()
+                    and not get_custom_auth().password_login_allowed(self._user)):
+                self._sso_only = True
         check_login = FailedLoginAttempt.check_request(request, self._user)
         if check_login != True:
             self._locked = check_login
@@ -357,6 +373,7 @@ class ModalLoginView(CustomiseMixin, SuccessRedirectMixin, FormModal, LoginView)
     def get_form_kwargs(self):
         kwargs = super().get_form_kwargs()
         kwargs['locked'] = self._locked
+        kwargs['sso_only'] = self.sso_only_message if self._sso_only else None
         return kwargs
 
     def form_valid(self, form):

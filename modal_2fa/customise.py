@@ -125,6 +125,17 @@ class CustomiseAuth(MicrosoftCustomiseMixin):
         return True
 
     @staticmethod
+    def password_login_allowed(user):
+        """Whether ``user`` may authenticate with a password (default True).
+
+        Return False to make a user *Entra-only*: their password is rejected at
+        the backend (``CookieBackend.authenticate``) and they must sign in with
+        "Sign in with Microsoft". Note: only meaningful when Microsoft sign-in is
+        configured -- otherwise a user for whom this returns False has no way in.
+        """
+        return True
+
+    @staticmethod
     def allowed_remember(user):
         """Whether the "remember this device" option is offered to ``user``."""
         return True

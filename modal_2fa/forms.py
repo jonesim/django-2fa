@@ -34,14 +34,21 @@ class CrispySetPasswordForm(CrispyFormMixin, SetPasswordForm):
 
 class CrispyLoginForm(CrispyFormMixin, AuthenticationForm):
 
-    def __init__(self, *args, locked=None, **kwargs):
+    def __init__(self, *args, locked=None, sso_only=None, **kwargs):
         self.locked = locked
+        self.sso_only = sso_only
         super().__init__(*args, **kwargs)
 
     def post_init(self, *args, **kwargs):
         if self.locked:
             self.no_buttons = True
             return [HTML(f'<div class="alert alert-danger">{self.locked}</div>')]
+        if self.sso_only:
+            # Entra-only account: no password fields or submit button -- just the
+            # explanation and the Microsoft sign-in button (the only way in).
+            self.no_buttons = True
+            return [HTML(f'<div class="alert alert-warning">{self.sso_only}</div>'),
+                    HTML(microsoft_login_button())]
         self.buttons.append(self.submit_button())
         layout = [
             Field('username', 'password'),
