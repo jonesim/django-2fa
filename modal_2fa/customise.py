@@ -1,3 +1,5 @@
+import ipaddress
+
 from django.contrib.auth.views import PasswordResetView
 
 from .urls import make_url_patterns, pattern_dict
@@ -42,6 +44,29 @@ class CustomiseAuth(MicrosoftCustomiseMixin):
     reset_password_email_template = None
     reset_password_txt_email_template = 'modal_2fa/emails/password_reset_email.html'
     reset_password_subject_template = 'modal_2fa/emails/password_reset_subject.txt'
+
+    # IP allowlist for the brute-force lockout. Addresses / CIDR ranges here are
+    # never blocked by the *shared-IP* lockout (e.g. trusted office / VPN / NAT
+    # egress, where one bad actor would otherwise lock out everyone). The
+    # per-user lockout still applies. Consumers can either set this list or
+    # override is_ip_excluded() for dynamic logic.
+    excluded_ips = []   # e.g. ['10.0.0.0/24', '203.0.113.5']
+
+    @classmethod
+    def is_ip_excluded(cls, ip_address):
+        if not ip_address:
+            return False
+        try:
+            addr = ipaddress.ip_address(ip_address)
+        except ValueError:
+            return False
+        for entry in cls.excluded_ips:
+            try:
+                if addr in ipaddress.ip_network(entry, strict=False):
+                    return True
+            except ValueError:
+                continue   # ignore malformed allowlist entries rather than 500
+        return False
 
     @staticmethod
     def override_views():

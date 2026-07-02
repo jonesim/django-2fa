@@ -6,7 +6,7 @@ from django.conf import settings
 from ajax_helpers.utils import random_string
 from django.db.models import Q
 
-from modal_2fa.utils import get_client_ip_address
+from modal_2fa.utils import get_client_ip_address, get_custom_auth
 
 
 class RememberDeviceCookie(models.Model):
@@ -86,12 +86,24 @@ class FailedLoginAttempt(models.Model):
     locked_time = models.DateTimeField(null=True, blank=True)
 
     @classmethod
-    def check_request(cls, request, user):
+    def check_request(cls, request, user, use_ip=True):
+        # use_ip=False scopes the check to the user alone (no shared-IP clause).
+        # The 2FA step uses this: the user is already known and each user's secret
+        # is independent, so one attacker on a shared NAT must not block everyone.
         now = datetime.datetime.now()
-        if user:
-            results = cls.objects.filter(Q(ip_address=get_client_ip_address(request)) | Q(user=user))
+        ip_address = get_client_ip_address(request)
+        # An allowlisted IP (trusted office/VPN/NAT egress) is never blocked by the
+        # shared-IP lockout; drop the IP clause and fall back to the user only.
+        if use_ip and get_custom_auth().is_ip_excluded(ip_address):
+            use_ip = False
+        if use_ip and user:
+            results = cls.objects.filter(Q(ip_address=ip_address) | Q(user=user))
+        elif use_ip:
+            results = cls.objects.filter(Q(ip_address=ip_address))
+        elif user:
+            results = cls.objects.filter(user=user)
         else:
-            results = cls.objects.filter(Q(ip_address=get_client_ip_address(request)))
+            return True
         for r in results:
             if not r.locked_time:
                 continue
@@ -99,7 +111,7 @@ class FailedLoginAttempt(models.Model):
                 # Lockout window is still in effect.
                 if r.user_id:
                     return 'Account locked'
-                return f'IP Blocked {get_client_ip_address(request)}'
+                return f'IP Blocked {ip_address}'
             # The window has elapsed: clear the lock so the next window starts fresh.
             r.failed_attempts = 0
             r.locked_time = None
@@ -107,22 +119,31 @@ class FailedLoginAttempt(models.Model):
         return True
 
     @classmethod
-    def clear_failed_attempts(cls, request, user):
-        cls.objects.filter(Q(ip_address=get_client_ip_address(request)) | Q(user=user)).delete()
+    def clear_failed_attempts(cls, request, user, use_ip=True):
+        if use_ip:
+            cls.objects.filter(Q(ip_address=get_client_ip_address(request)) | Q(user=user)).delete()
+        elif user:
+            # User-scoped clear: leave the shared-IP counter alone (it may be
+            # tracking other clients behind the same NAT).
+            cls.objects.filter(user=user).delete()
 
     @classmethod
-    def add_failed_attempt(cls, request, user):
+    def add_failed_attempt(cls, request, user, use_ip=True):
         lockout_time = (datetime.datetime.now() +
                         datetime.timedelta(seconds=getattr(settings, 'AUTHENTICATION_LOCKOUT_SECONDS', 30)))
-        ip_address = get_client_ip_address(request)
-        ip_fail = cls.objects.filter(ip_address=ip_address, user__isnull=True).first()
-        if ip_fail:
-            ip_fail.failed_attempts += 1
-            if ip_fail.failed_attempts > getattr(settings, 'AUTHENTICATION_IP_FAILED_ATTEMPTS', 20):
-                ip_fail.locked_time = lockout_time
-            ip_fail.save()
-        else:
-            cls(ip_address=ip_address, failed_attempts=1).save()
+        if use_ip:
+            ip_address = get_client_ip_address(request)
+            # Don't count or lock an allowlisted IP -- the per-user block below
+            # still records the attempt, so individual accounts stay protected.
+            if not get_custom_auth().is_ip_excluded(ip_address):
+                ip_fail = cls.objects.filter(ip_address=ip_address, user__isnull=True).first()
+                if ip_fail:
+                    ip_fail.failed_attempts += 1
+                    if ip_fail.failed_attempts > getattr(settings, 'AUTHENTICATION_IP_FAILED_ATTEMPTS', 20):
+                        ip_fail.locked_time = lockout_time
+                    ip_fail.save()
+                else:
+                    cls(ip_address=ip_address, failed_attempts=1).save()
         if user:
             user_fail = cls.objects.filter(user=user).first()
             if user_fail:
