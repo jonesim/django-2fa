@@ -140,6 +140,17 @@ otherwise the user still completes the normal TOTP/WebAuthn step. All of this is
 overridable — see `MicrosoftCustomiseMixin` (`microsoft_allowed`, `microsoft_user`,
 `microsoft_satisfies_2fa`, …).
 
+To make certain users **Entra-only** (no password login at all), override
+`password_login_allowed(user)` to return `False` for them. Their password is
+rejected at the backend and the login modal shows a message plus the Microsoft
+button. The rule is yours to define — e.g. by group:
+
+    class MyCustomise(CustomiseAuth):
+
+        @staticmethod
+        def password_login_allowed(user):
+            return not user.groups.filter(name='sso-only').exists()
+
 ## Customisation
 
 Point `AUTHENTICATION_CUSTOMISATION` at a subclass of `CustomiseAuth`:
@@ -168,9 +179,9 @@ Point `AUTHENTICATION_CUSTOMISATION` at a subclass of `CustomiseAuth`:
         def customise_view(view):
             view.size = 'md'                  # restyle any auth modal
 
-Common hooks: `user_2fa_optional`, `allowed_remember`, `max_cookies`,
-`customise_view`, `override_views` (swap any URL→view mapping), and the email
-template attributes for invitations and password resets.
+Common hooks: `user_2fa_optional`, `password_login_allowed`, `allowed_remember`,
+`max_cookies`, `customise_view`, `override_views` (swap any URL→view mapping), and
+the email template attributes for invitations and password resets.
 
 ## Adding the user menu
 

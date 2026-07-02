@@ -10,6 +10,7 @@ from django.urls import reverse
 
 from django.http import HttpResponse
 
+from modal_2fa.backends import CookieBackend
 from modal_2fa.customise import CustomiseAuth
 from modal_2fa.models import FailedLoginAttempt, RememberDeviceCookie, WebauthnCredential
 from modal_2fa.utils import get_client_ip_address, safe_redirect_url
@@ -24,6 +25,20 @@ test_user = {'username': 'test@test.com',
 
 invalid_user = {'username': 'test@test.com',
                 'password': 'bad_password'}
+
+
+class ExcludedIPCustomise(CustomiseAuth):
+    # CIDR covering the test client's 127.0.0.1 -- referenced by override_settings
+    # as 'examples.tests.ExcludedIPCustomise'.
+    excluded_ips = ['127.0.0.0/8']
+
+
+class SsoOnlyCustomise(CustomiseAuth):
+    # Every user is Entra-only -- referenced by override_settings as
+    # 'examples.tests.SsoOnlyCustomise'.
+    @staticmethod
+    def password_login_allowed(user):
+        return False
 
 
 class UserMixin:
@@ -43,6 +58,7 @@ class UserMixin:
             key='2a2bbba1092ffdd25a328ad1a0a5f5d61d7aacc4', step=30,
             t0=int(time() - (30 * 3)), digits=6, tolerance=0, drift=0
         )
+        return user
 
 
 class LoginTest(UserMixin, TestCase):
@@ -137,6 +153,147 @@ class LoginTest(UserMixin, TestCase):
         assert 'id_password' in response.json()[0]['html']
         refreshed = FailedLoginAttempt.objects.get(user=user)
         assert refreshed.locked_time is None
+
+
+@override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.ExcludedIPCustomise')
+class ExcludedIPTest(UserMixin, TestCase):
+    """Allowlisted IPs bypass the shared-IP lockout but not the per-user one."""
+
+    nonexistent = {'username': 'ghost@nowhere.com', 'password': 'whatever'}
+
+    def test_excluded_ip_not_locked(self):
+        # Spray well past the IP threshold (default 20) with an unknown username,
+        # so only the IP path could trigger.
+        for _ in range(25):
+            self.client.post(reverse('auth:login'), self.nonexistent)
+        # No shared-IP row is ever recorded for an allowlisted address.
+        assert not FailedLoginAttempt.objects.filter(user__isnull=True).exists()
+        # And login is still served (not replaced by the 'IP Blocked' alert).
+        response = self.client.post(reverse('auth:login'), self.nonexistent)
+        assert 'id_password' in response.json()[0]['html']
+
+    def test_excluded_ip_user_lockout_still_applies(self):
+        user = self.create_user()
+        # Wrong password for a real user, past the per-user threshold (default 10).
+        for _ in range(11):
+            self.client.post(reverse('auth:login'), invalid_user)
+        # The account still locks -- per-user protection is unaffected by the
+        # IP allowlist...
+        assert FailedLoginAttempt.objects.get(user=user).locked_time is not None
+        # ...while the shared IP is never recorded.
+        assert not FailedLoginAttempt.objects.filter(user__isnull=True).exists()
+
+
+class IpExcludedHelperTest(TestCase):
+    """Unit coverage for CustomiseAuth.is_ip_excluded (CIDR + robustness)."""
+
+    def test_cidr_and_exact_match(self):
+        class C(CustomiseAuth):
+            excluded_ips = ['10.0.0.0/24', '203.0.113.5']
+        assert C.is_ip_excluded('10.0.0.7') is True      # inside CIDR
+        assert C.is_ip_excluded('203.0.113.5') is True   # exact host
+        assert C.is_ip_excluded('10.0.1.7') is False     # outside CIDR
+
+    def test_empty_default(self):
+        assert CustomiseAuth.is_ip_excluded('127.0.0.1') is False
+
+    def test_malformed_inputs_are_safe(self):
+        class C(CustomiseAuth):
+            excluded_ips = ['not-an-ip', '10.0.0.0/24']
+        assert C.is_ip_excluded(None) is False
+        assert C.is_ip_excluded('garbage') is False
+        # The malformed entry is skipped; the valid one still matches.
+        assert C.is_ip_excluded('10.0.0.5') is True
+
+
+class TwoFactorThrottleTest(UserMixin, TestCase):
+    """The 2FA step is rate-limited just like the password step, so a stolen
+    password can't buy unlimited TOTP guesses."""
+
+    valid_code = '154567'   # valid for the fixed device key/time in create_TOTP_user
+    wrong_code = '000000'
+
+    def _start_2fa(self):
+        # Correct password for a TOTP user advances to the 2FA modal (part_login).
+        response = self.client.post(reverse('auth:login'), test_user)
+        assert response.json() == [{'function': 'close'},
+                                   {'function': 'show_modal', 'modal': reverse('auth:auth_2fa')}]
+
+    def test_wrong_code_accumulates_and_locks(self):
+        user = self.create_TOTP_user()
+        self._start_2fa()
+        # Each wrong code is recorded against the user (default threshold 10).
+        for i in range(1, 12):
+            response = self.client.post(reverse('auth:auth_2fa'), {'code': self.wrong_code})
+            assert FailedLoginAttempt.objects.get(user=user).failed_attempts == i
+            assert 'id_code' in response.json()[0]['html']
+        # Threshold exceeded: the lock is applied and the code field is withdrawn.
+        assert FailedLoginAttempt.objects.get(user=user).locked_time is not None
+        response = self.client.post(reverse('auth:auth_2fa'), {'code': self.wrong_code})
+        assert 'id_code' not in response.json()[0]['html']
+
+    def test_locked_rejects_correct_code(self):
+        self.create_TOTP_user()
+        self._start_2fa()
+        for _ in range(11):
+            self.client.post(reverse('auth:auth_2fa'), {'code': self.wrong_code})
+        # Even the correct code must not log in while the lockout window is active.
+        self.client.post(reverse('auth:auth_2fa'), {'code': self.valid_code})
+        assert '_auth_user_id' not in self.client.session
+        assert 'authentication_method' not in self.client.session
+
+    def test_locked_attempt_does_not_extend_lockout(self):
+        user = self.create_TOTP_user()
+        self._start_2fa()
+        for _ in range(11):
+            self.client.post(reverse('auth:auth_2fa'), {'code': self.wrong_code})
+        attempts = FailedLoginAttempt.objects.get(user=user).failed_attempts
+        # Retrying while locked must not keep incrementing the counter.
+        self.client.post(reverse('auth:auth_2fa'), {'code': self.wrong_code})
+        assert FailedLoginAttempt.objects.get(user=user).failed_attempts == attempts
+
+    def test_success_clears_attempts(self):
+        user = self.create_TOTP_user()
+        self._start_2fa()
+        # Prior failures recorded against this user (set directly to avoid the
+        # per-device django-otp throttle that would block an immediate retry).
+        FailedLoginAttempt.objects.create(user=user, failed_attempts=3)
+        response = self.client.post(reverse('auth:auth_2fa'), {'code': self.valid_code})
+        assert self.client.session['authentication_method'] == '2fa'
+        assert not FailedLoginAttempt.objects.filter(user=user).exists()
+
+    def test_ip_lock_does_not_block_2fa(self):
+        # A shared-IP lockout (caused by an unrelated attacker spraying logins)
+        # must not block a legitimate user who has already reached the 2FA step:
+        # the 2FA throttle is user-scoped, not IP-scoped.
+        self.create_TOTP_user()
+        self._start_2fa()   # part_login established while the IP is still clean
+        FailedLoginAttempt.objects.create(
+            ip_address='127.0.0.1', failed_attempts=99,
+            locked_time=datetime.datetime.now() + datetime.timedelta(seconds=30),
+        )
+        # The user's own 2FA is unaffected -- the code field is still presented
+        # (an IP block would have replaced it with the lockout alert).
+        response = self.client.post(reverse('auth:auth_2fa'), {'code': self.wrong_code})
+        assert 'id_code' in response.json()[0]['html']
+
+    def test_wrong_code_does_not_touch_ip_counter(self):
+        # Wrong 2FA codes are recorded against the user only, never the shared IP.
+        self.create_TOTP_user()
+        self._start_2fa()
+        self.client.post(reverse('auth:auth_2fa'), {'code': self.wrong_code})
+        assert not FailedLoginAttempt.objects.filter(user__isnull=True).exists()
+
+    def test_password_failures_carry_into_2fa(self):
+        user = self.create_TOTP_user()
+        # Two bad passwords build up a counter.
+        for _ in range(2):
+            self.client.post(reverse('auth:login'), invalid_user)
+        assert FailedLoginAttempt.objects.get(user=user).failed_attempts == 2
+        # Reaching 2FA with the correct password must NOT reset that counter,
+        # otherwise the 2FA throttle would start fresh on every login.
+        self._start_2fa()
+        assert FailedLoginAttempt.objects.get(user=user).failed_attempts == 2
 
 
 class MicrosoftGuestTest(TestCase):
@@ -242,6 +399,46 @@ class WebAuthnSignCountTest(UserMixin, TestCase):
         with mock.patch('modal_2fa.webauthn.verify_authentication_response') as verify:
             assert harness.check_authentication(user) is False
         verify.assert_not_called()
+
+
+class PasswordLoginAllowedHookTest(UserMixin, TestCase):
+    """The password_login_allowed policy hook (default + the demo's group rule)."""
+
+    def test_default_allows_password(self):
+        user = self.create_user()
+        assert CustomiseAuth.password_login_allowed(user) is True
+
+    def test_example_blocks_sso_only_group(self):
+        from django.contrib.auth.models import Group
+        from examples.customise import ExampleCustomise
+        user = self.create_user()
+        # Not in the group -> normal password login.
+        assert ExampleCustomise.password_login_allowed(user) is True
+        user.groups.add(Group.objects.create(name='sso-only'))
+        # In the 'sso-only' group -> Entra-only, password refused.
+        assert ExampleCustomise.password_login_allowed(user) is False
+
+
+@override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.SsoOnlyCustomise')
+class SsoOnlyLoginTest(UserMixin, TestCase):
+    """An Entra-only user (password_login_allowed -> False) cannot log in with a
+    password. Enforcement is at the backend, so the Microsoft path -- which never
+    checks a password -- is unaffected."""
+
+    def test_backend_refuses_correct_password(self):
+        self.create_user()
+        request = RequestFactory().post(self.login_url)
+        # Correct credentials, but policy blocks the password path entirely.
+        user = CookieBackend().authenticate(
+            request, username=test_user['username'], password=test_user['password'])
+        assert user is None
+
+    def test_http_login_blocked(self):
+        self.create_user()
+        response = self.client.post(reverse('auth:login'), test_user)
+        assert response.status_code == 200
+        # Correct password, but the user is never authenticated.
+        assert '_auth_user_id' not in self.client.session
 
 
 class ClientIpTest(TestCase):

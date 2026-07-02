@@ -28,6 +28,13 @@ class ExampleCustomise(CustomiseAuth):
         return True
 
     @staticmethod
+    def password_login_allowed(user):
+        # Members of the 'sso-only' group are Entra-only: their password is
+        # rejected and they must use "Sign in with Microsoft". Inert for everyone
+        # else, so normal password login is unaffected.
+        return not user.groups.filter(name='sso-only').exists()
+
+    @staticmethod
     def microsoft_satisfies_2fa(claims):
         # The Entra ID token carries no amr/auth_time, so MFA can't be read from
         # it. We trust a successful single-tenant Microsoft sign-in as the second
