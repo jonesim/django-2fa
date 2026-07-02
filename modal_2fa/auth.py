@@ -201,6 +201,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.user = None
+        self._locked = False
 
     def dispatch(self, request, *args, **kwargs):
         if CookieBackend.get_part_login(request):
@@ -219,6 +220,13 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
             self.user = self.request.user
         else:
             return self._login_redirect()
+        # Throttle the second factor: a correct password alone must not buy an
+        # unlimited number of TOTP/WebAuthn guesses (a 6-digit code is otherwise
+        # brute-forceable). Scoped to the user (use_ip=False), not the shared IP,
+        # so one attacker on a NAT can't lock out everyone mid-2FA.
+        check_login = FailedLoginAttempt.check_request(request, self.user, use_ip=False)
+        if check_login != True:
+            self._locked = check_login
         return super().dispatch(request, *args, **kwargs)
 
     def _login_redirect(self):
@@ -228,7 +236,10 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
 
     @ajax_method
     def auth(self, **kwargs):
+        if self._locked:
+            return self.error_message(self._locked)
         if self.check_authentication(self.user):
+            FailedLoginAttempt.clear_failed_attempts(self.request, self.user, use_ip=False)
             auth_login(self.request, self.user, backend='modal_2fa.auth.CookieBackend')
             self.request.session['authentication_method'] = '2fa'
             return self.success_response()
@@ -253,7 +264,15 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
 
     def get_form_kwargs(self):
         return dict(**super().get_form_kwargs(), request=self.request, device=self.get_device(),
-                    allowed_remember=self.allowed_remember(self.user))
+                    allowed_remember=self.allowed_remember(self.user), locked=self._locked)
+
+    def form_invalid(self, form):
+        # An incorrect code is a brute-force guess: record it against the user
+        # only (use_ip=False), unless already locked -- re-trying while locked
+        # must not perpetually extend the lockout.
+        if not self._locked:
+            FailedLoginAttempt.add_failed_attempt(self.request, self.user, use_ip=False)
+        return super().form_invalid(form)
 
     def button_cancel(self, **_kwargs):
         # Safe pop: button_cancel is reachable with no part_login set (an already
@@ -264,6 +283,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         return self.command_response('show_modal', modal=reverse('auth:login'))
 
     def form_valid(self, form):
+        FailedLoginAttempt.clear_failed_attempts(self.request, self.user, use_ip=False)
         auth_login(self.request, self.user, backend='modal_2fa.auth.CookieBackend')
         if form.cleaned_data.get('remember'):
             return self.command_response(ajax_modal_replace(self.request, 'auth:confirm_remember',
