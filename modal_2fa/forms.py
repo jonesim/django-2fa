@@ -71,6 +71,11 @@ class Form2FA(CrispyForm):
 
     def post_init(self, *args, **kwargs):
         self.buttons = []
+        if self.locked:
+            # Account/IP is locked out: render only the alert, no code field or
+            # submit button. Enforcement is in clean() -- this is just the UI.
+            self.no_buttons = True
+            return (HTML(f'<div class="alert alert-danger">{self.locked}</div>'),)
         if not self.device.confirmed:
             new_device = (HTML(render_to_string('modal_2fa/new_totp.html', {'svg': self.get_qr_code(self.device)})),
                           HTML(web_authn_script()))
@@ -87,6 +92,10 @@ class Form2FA(CrispyForm):
 
     def clean(self):
         super(Form2FA, self).clean()
+        if self.locked:
+            # Server-side guard: reject even a crafted POST carrying a code while
+            # locked, regardless of what post_init chose to render.
+            raise ValidationError(self.locked)
         if 'code' in self.cleaned_data:
             if not authenticate(self.request, device=self.device, token=self.cleaned_data['code']):
                 raise ValidationError('Incorrect Code')
@@ -95,10 +104,11 @@ class Form2FA(CrispyForm):
                 self.device.save()
         return self.cleaned_data
 
-    def __init__(self, request, device, *args, allowed_remember=True, **kwargs):
+    def __init__(self, request, device, *args, allowed_remember=True, locked=None, **kwargs):
         self.request = request
         self.device = device
         self.allowed_remember = allowed_remember
+        self.locked = locked
         super(Form2FA, self).__init__(*args, **kwargs)
 
 
