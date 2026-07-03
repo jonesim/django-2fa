@@ -4,6 +4,7 @@ from django_modals.modals import TemplateModal
 from django_modals.datatables import EditColumn
 from django_datatables.datatables import DatatableView, DatatableTable
 from django_datatables.columns import DatatableColumn
+from .users import UserAdminPermissionMixin
 from .utils import get_custom_auth
 
 UserModel = get_user_model()
@@ -70,7 +71,7 @@ class UserTable(DatatableView):
         add_user_columns(table)
 
 
-class UserAdminModal(TemplateModal):
+class UserAdminModal(UserAdminPermissionMixin, TemplateModal):
     modal_template = 'modal_2fa/user_admin_modal.html'
 
     def modal_context(self):

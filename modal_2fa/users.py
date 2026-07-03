@@ -7,16 +7,45 @@ from django.views import View
 
 from django_modals.modals import ModelFormModal, Modal
 from django_modals.helper import modal_button, modal_button_method
+from django_modals.processes import PERMISSION_METHOD
 
 from .auth import CustomiseMixin
 
 UserModel = get_user_model()
 
 
+class UserAdminPermissionMixin:
+    """Gate a user-management modal behind the ``auth.change_user`` permission.
+
+    For simple ``Modal``/``TemplateModal`` views whose ``process_slug_kwargs``
+    otherwise just returns ``True`` (open). These modals are registered
+    unconditionally under ``auth/``, so without this an unauthenticated request
+    could reach them. Mirrors the permission the user menu already checks (see
+    ``menus.py``); superusers pass it automatically.
+
+    Not for ``ModelFormModal`` — that resolves permissions from its
+    ``permission_*`` attributes inside its own ``process_slug_kwargs`` (which
+    also sets up the object/process), so overriding the method there would skip
+    that setup. Use ``PERMISSION_METHOD`` + ``permission()`` for those instead.
+    """
+
+    def process_slug_kwargs(self):
+        return self.request.user.has_perm('auth.change_user')
+
+
 class ModalUserForm(ModelFormModal):
 
     model = UserModel
     form_fields = ['email', 'first_name', 'last_name']
+
+    # ModelFormModal resolves permission from these attributes; PERMISSION_METHOD
+    # routes each process (create/edit/view) through permission() below.
+    permission_create = PERMISSION_METHOD
+    permission_edit = PERMISSION_METHOD
+    permission_view = PERMISSION_METHOD
+
+    def permission(self, user, process):
+        return user.has_perm('auth.change_user')
 
     def form_valid(self, form):
         self.object.username = self.object.email
@@ -26,7 +55,7 @@ class ModalUserForm(ModelFormModal):
         return self.modal_replace('invite_user_confirm', slug=str(self.object.id))
 
 
-class ModalInviteUser(CustomiseMixin, Modal, PasswordResetView):
+class ModalInviteUser(UserAdminPermissionMixin, CustomiseMixin, Modal, PasswordResetView):
     success_url = '/'
     modal_title = 'Send Email Invite to user'
 
