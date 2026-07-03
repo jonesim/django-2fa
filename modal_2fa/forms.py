@@ -1,6 +1,5 @@
 from io import BytesIO
 import qrcode
-from django.templatetags.static import static
 
 from qrcode.image.svg import SvgPathFillImage
 
