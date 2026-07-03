@@ -244,9 +244,11 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
             auth_login(self.request, self.user, backend='modal_2fa.auth.CookieBackend')
             self.request.session['authentication_method'] = '2fa'
             return self.success_response()
-        else:
-            return self.error_message(f'Could not log in with credential<br>{self.last_error}')
-        return self.command_response('null')
+        # A failed WebAuthn assertion is a second-factor guess like a wrong TOTP
+        # code: count it against the user (use_ip=False) so it shares the 2FA
+        # lockout rather than allowing unlimited attempts.
+        FailedLoginAttempt.add_failed_attempt(self.request, self.user, use_ip=False)
+        return self.error_message(f'Could not log in with credential<br>{self.last_error}')
 
     def get_device(self):
         device = TOTPDevice.objects.filter(user=self.user).first()
