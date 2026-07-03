@@ -1,7 +1,6 @@
-import datetime
-
 from django.contrib.auth import get_user_model
 from django.contrib.sessions.models import Session
+from django.utils import timezone
 from django.utils.html import escape, mark_safe
 
 from django_modals.modals import Modal, TemplateModal
@@ -37,7 +36,7 @@ class SecurityAdminModal(SuperuserModalMixin, TemplateModal):
 
     @staticmethod
     def failed_attempt_rows():
-        now = datetime.datetime.now()
+        now = timezone.now()
         rows = []
         for attempt in FailedLoginAttempt.objects.select_related('user').order_by('-locked_time', '-failed_attempts'):
             locked = bool(attempt.locked_time and attempt.locked_time > now)
@@ -59,7 +58,7 @@ def active_sessions():
     Relies on the database session backend (the default); a cache-only ``SESSION_ENGINE`` keeps no
     server-side session rows, so this list will be empty.
     """
-    now = datetime.datetime.now()
+    now = timezone.now()
     users = {str(u.pk): u for u in UserModel.objects.all()}
     rows = []
     for session in Session.objects.filter(expire_date__gte=now):

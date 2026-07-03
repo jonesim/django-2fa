@@ -3,6 +3,7 @@ import datetime
 from django.contrib.auth import get_user_model
 from django.db import models
 from django.conf import settings
+from django.utils import timezone
 from ajax_helpers.utils import random_string
 from django.db.models import Q
 
@@ -53,7 +54,7 @@ class RememberDeviceCookie(models.Model):
         # cross-site requests (samesite) in addition to https-only (secure).
         response.set_cookie(RememberDeviceCookie.cookie_name(self.user), value=f'{self.key}:{self.id}', secure=True,
                             httponly=True, samesite='Lax',
-                            expires=datetime.datetime.today() + datetime.timedelta(days=365))
+                            expires=timezone.now() + datetime.timedelta(days=365))
 
     @staticmethod
     def update_cookie(user, request, response):
@@ -90,7 +91,7 @@ class FailedLoginAttempt(models.Model):
         # use_ip=False scopes the check to the user alone (no shared-IP clause).
         # The 2FA step uses this: the user is already known and each user's secret
         # is independent, so one attacker on a shared NAT must not block everyone.
-        now = datetime.datetime.now()
+        now = timezone.now()
         ip_address = get_client_ip_address(request)
         # An allowlisted IP (trusted office/VPN/NAT egress) is never blocked by the
         # shared-IP lockout; drop the IP clause and fall back to the user only.
@@ -129,7 +130,7 @@ class FailedLoginAttempt(models.Model):
 
     @classmethod
     def add_failed_attempt(cls, request, user, use_ip=True):
-        lockout_time = (datetime.datetime.now() +
+        lockout_time = (timezone.now() +
                         datetime.timedelta(seconds=getattr(settings, 'AUTHENTICATION_LOCKOUT_SECONDS', 30)))
         if use_ip:
             ip_address = get_client_ip_address(request)
