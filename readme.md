@@ -118,9 +118,12 @@ admin for two operational tasks:
   authentication method and expiry. **Sign out** deletes the session, ending it
   immediately — useful for revoking a session you believe is compromised.
 
-Access is gated on `is_superuser`. The active-sessions list reads server-side
-session rows, so it requires the database session backend (Django's default); with
-a cache-only `SESSION_ENGINE` the list will be empty.
+Access is gated on the `can_manage_security` hook, which defaults to
+`is_superuser` — override it if superuser status in your project comes from group
+or role membership rather than the flag (see **Customisation** below). The
+active-sessions list reads server-side session rows, so it requires the database
+session backend (Django's default); with a cache-only `SESSION_ENGINE` the list
+will be empty.
 
 ## Optional: Sign in with Microsoft / Entra
 
@@ -180,8 +183,38 @@ Point `AUTHENTICATION_CUSTOMISATION` at a subclass of `CustomiseAuth`:
             view.size = 'md'                  # restyle any auth modal
 
 Common hooks: `user_2fa_optional`, `password_login_allowed`, `allowed_remember`,
-`max_cookies`, `customise_view`, `override_views` (swap any URL→view mapping), and
-the email template attributes for invitations and password resets.
+`max_cookies`, `can_manage_users`, `can_manage_security`, `customise_view`,
+`override_views` (swap any URL→view mapping), and the email template attributes
+for invitations and password resets.
+
+### Who may manage users and security
+
+Two hooks gate the admin surfaces. Unlike the hooks above they take
+`(user, request=None)` — `request` is passed whenever the caller has one, for
+permission systems that depend on session or site state:
+
+* `can_manage_users(user, request=None)` — user create/edit/view, the user admin
+  table, and email invites. Defaults to the `change` permission on your *own*
+  user model, derived from `get_user_model()` — so it is correct under a swapped
+  `AUTH_USER_MODEL` (e.g. `myapp.change_usermodel`, not `auth.change_user`).
+* `can_manage_security(user, request=None)` — the Security Admin modal. Defaults
+  to `is_superuser`.
+
+The defaults rely on `has_perm()`, which resolves group permissions through
+Django's built-in `user.groups` M2M. If your project uses its own membership
+model, override both:
+
+    class MyCustomise(CustomiseAuth):
+
+        @staticmethod
+        def can_manage_users(user, request=None):
+            if request is None:
+                return False              # no session context — fail closed
+            return user_in_group(request, 'user-admins')
+
+        @staticmethod
+        def can_manage_security(user, request=None):
+            return MyCustomise.can_manage_users(user, request)
 
 ## Adding the user menu
 

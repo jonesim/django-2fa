@@ -2,6 +2,7 @@ from ajax_helpers.mixins import AjaxHelpers
 from django.conf import settings
 from django.contrib.auth import get_user_model, logout
 from django.contrib.auth.forms import PasswordResetForm
+from django.contrib.auth.mixins import UserPassesTestMixin
 from django.contrib.auth.views import PasswordResetView
 from django.views import View
 
@@ -10,18 +11,19 @@ from django_modals.helper import modal_button, modal_button_method
 from django_modals.processes import PERMISSION_METHOD
 
 from .auth import CustomiseMixin
+from .utils import get_custom_auth
 
 UserModel = get_user_model()
 
 
 class UserAdminPermissionMixin:
-    """Gate a user-management modal behind the ``auth.change_user`` permission.
+    """Gate a user-management modal behind ``CustomiseAuth.can_manage_users``.
 
     For simple ``Modal``/``TemplateModal`` views whose ``process_slug_kwargs``
     otherwise just returns ``True`` (open). These modals are registered
     unconditionally under ``auth/``, so without this an unauthenticated request
-    could reach them. Mirrors the permission the user menu already checks (see
-    ``menus.py``); superusers pass it automatically.
+    could reach them. Mirrors the hook the user menu already checks (see
+    ``menus.py``).
 
     Not for ``ModelFormModal`` — that resolves permissions from its
     ``permission_*`` attributes inside its own ``process_slug_kwargs`` (which
@@ -30,7 +32,20 @@ class UserAdminPermissionMixin:
     """
 
     def process_slug_kwargs(self):
-        return self.request.user.has_perm('auth.change_user')
+        return get_custom_auth().can_manage_users(self.request.user, self.request)
+
+
+class UserAdminViewPermissionMixin(UserPassesTestMixin):
+    """Gate a plain (non-modal) view behind ``CustomiseAuth.can_manage_users``.
+
+    ``DatatableView`` is a bare ``TemplateView`` with no ``process_slug_kwargs``
+    hook, so ``UserAdminPermissionMixin`` would be silently inert on it.
+    ``handle_no_permission`` sends anonymous users to the login page and raises
+    ``PermissionDenied`` for anyone already signed in.
+    """
+
+    def test_func(self):
+        return get_custom_auth().can_manage_users(self.request.user, self.request)
 
 
 class ModalUserForm(ModelFormModal):
@@ -45,7 +60,9 @@ class ModalUserForm(ModelFormModal):
     permission_view = PERMISSION_METHOD
 
     def permission(self, user, process):
-        return user.has_perm('auth.change_user')
+        # ``self`` is None when django-modals resolves permission at class level
+        # (ModelFormModal.user_has_perm), so there is no request to hand on.
+        return get_custom_auth().can_manage_users(user, getattr(self, 'request', None))
 
     def form_valid(self, form):
         self.object.username = self.object.email

@@ -7,20 +7,22 @@ from django_modals.modals import Modal, TemplateModal
 from django_modals.helper import modal_button, modal_button_method, show_modal
 
 from .models import FailedLoginAttempt
+from .utils import get_custom_auth
 
 UserModel = get_user_model()
 
 
 class SuperuserModalMixin:
-    """Restrict a modal to superusers.
+    """Restrict a modal to users who pass ``CustomiseAuth.can_manage_security``.
 
     ``process_slug_kwargs`` is the permission hook ``BaseModalMixin.dispatch`` checks; returning
     ``False`` makes it raise ``ModalException`` instead of rendering the modal. The menus only show
-    these modals to superusers, but this guards against a non-superuser hitting the URL directly.
+    these modals to users who pass the same hook, but this guards against anyone else hitting the
+    URL directly.
     """
 
     def process_slug_kwargs(self):
-        return self.request.user.is_superuser
+        return get_custom_auth().can_manage_security(self.request.user, self.request)
 
 
 class SecurityAdminModal(SuperuserModalMixin, TemplateModal):

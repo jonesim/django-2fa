@@ -4,15 +4,20 @@ from time import time
 from unittest import mock
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group, Permission
 from django.shortcuts import resolve_url
 from django.test import RequestFactory, TestCase, override_settings
 from django.urls import reverse
 
 from django.http import HttpResponse
 
+from django_modals.modals import ModalException
+from django_modals.processes import PROCESS_EDIT
+
 from modal_2fa.backends import CookieBackend
 from modal_2fa.customise import CustomiseAuth
 from modal_2fa.models import FailedLoginAttempt, RememberDeviceCookie, WebauthnCredential
+from modal_2fa.users import ModalUserForm
 from modal_2fa.utils import get_client_ip_address, safe_redirect_url
 from modal_2fa.webauthn import WebAuthnMixin
 
@@ -41,6 +46,21 @@ class SsoOnlyCustomise(CustomiseAuth):
         return False
 
 
+class GroupAdminCustomise(CustomiseAuth):
+    """Superuser-by-group semantics: is_superuser is ignored entirely.
+
+    Stands in for a project whose membership lives outside the built-in
+    permission system -- referenced by override_settings as
+    'examples.tests.GroupAdminCustomise'.
+    """
+
+    @staticmethod
+    def _in_admin_group(user, request=None):
+        return request is not None and user.groups.filter(name='user-admins').exists()
+
+    can_manage_users = can_manage_security = _in_admin_group
+
+
 class UserMixin:
     @classmethod
     def setUpClass(cls):
@@ -51,6 +71,18 @@ class UserMixin:
     def create_user(self, username=test_user['username'], password=test_user['password'], **kwargs):
         user = self.User.objects.create_user(username=username, email=username, password=password, **kwargs)
         return user
+
+    def grant_user_admin(self, user):
+        """Give ``user`` the change permission on the project's user model.
+
+        Returns a re-fetched instance -- permission lookups are cached per
+        instance, so the original would still report the old answer.
+        """
+        model = get_user_model()
+        user.user_permissions.add(Permission.objects.get(
+            content_type__app_label=model._meta.app_label,
+            codename=f'change_{model._meta.model_name}'))
+        return model.objects.get(pk=user.pk)
 
     def create_TOTP_user(self):
         user = self.create_user()
@@ -492,6 +524,126 @@ class ClientIpTest(TestCase):
         request = self._request(HTTP_X_FORWARDED_FOR='1.1.1.1, 2.2.2.2, 3.3.3.3')
         # count=2 -> xff[-2]; the legacy boolean (which would give xff[-1]) is ignored.
         assert get_client_ip_address(request) == '2.2.2.2'
+
+
+class AccessHookDefaultsTest(UserMixin, TestCase):
+    """The defaults for can_manage_users / can_manage_security preserve the
+    behaviour of the hardcoded checks they replaced."""
+
+    def test_permission_string_is_derived_from_the_user_model(self):
+        # The point of the hook: the permission tracks AUTH_USER_MODEL instead of
+        # naming auth.User, which does not exist once the model is swapped out.
+        user = self.create_user()
+        model = get_user_model()
+        with mock.patch.object(type(user), 'has_perm', return_value=True) as has_perm:
+            assert CustomiseAuth.can_manage_users(user) is True
+        has_perm.assert_called_once_with(f'{model._meta.app_label}.change_{model._meta.model_name}')
+
+    def test_can_manage_users_follows_the_real_permission(self):
+        user = self.create_user()
+        assert CustomiseAuth.can_manage_users(user) is False
+        assert CustomiseAuth.can_manage_users(self.grant_user_admin(user)) is True
+
+    def test_can_manage_security_defaults_to_is_superuser(self):
+        user = self.create_user()
+        assert CustomiseAuth.can_manage_security(user) is False
+        user.is_superuser = True
+        assert CustomiseAuth.can_manage_security(user) is True
+
+    def test_class_level_permission_resolution(self):
+        # django-modals resolves permission on the class (not an instance) when a
+        # caller asks whether to render an edit button; it passes None as self, so
+        # ModalUserForm.permission must cope with having no request.
+        user = self.create_user()
+        assert ModalUserForm.user_has_perm(ModalUserForm, user, PROCESS_EDIT) is False
+        assert ModalUserForm.user_has_perm(ModalUserForm, self.grant_user_admin(user), PROCESS_EDIT) is True
+
+
+@override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.GroupAdminCustomise')
+class GroupAdminAccessTest(UserMixin, TestCase):
+    """A customisation that decides access by group membership alone overrides
+    both the permission check and is_superuser."""
+
+    def signed_in(self, in_group, **kwargs):
+        user = self.create_user(**kwargs)
+        if in_group:
+            user.groups.add(Group.objects.get_or_create(name='user-admins')[0])
+        self.client.force_login(user)
+        return user
+
+    def test_group_member_reaches_both_modals(self):
+        self.signed_in(True)
+        assert self.client.get(reverse('auth:user_admin_modal')).status_code == 200
+        assert self.client.get(reverse('auth:security_admin_modal')).status_code == 200
+
+    def test_superuser_outside_the_group_is_denied(self):
+        # is_superuser is deliberately ignored by this customisation.
+        self.signed_in(False, is_superuser=True, is_staff=True)
+        with self.assertRaises(ModalException):
+            self.client.get(reverse('auth:user_admin_modal'))
+        with self.assertRaises(ModalException):
+            self.client.get(reverse('auth:security_admin_modal'))
+
+    def test_group_member_reaches_user_and_invite_modals(self):
+        user = self.signed_in(True)
+        assert self.client.get(reverse('auth:user', args=[f'pk-{user.pk}'])).status_code == 200
+        assert self.client.get(reverse('auth:invite_user_confirm', args=[f'pk-{user.pk}'])).status_code == 200
+
+
+class UserTableAccessTest(UserMixin, TestCase):
+    """UserTable lists every user and is routed at /user-table/ in the demo, so
+    it needs the same gate as the modal that embeds it."""
+
+    url = '/user-table/'
+
+    def get(self):
+        # django_datatables' detect_device reads HTTP_USER_AGENT unguarded, so a
+        # request that gets past the gate needs one.
+        return self.client.get(self.url, HTTP_USER_AGENT='test')
+
+    def test_anonymous_is_sent_to_login(self):
+        response = self.get()
+        assert response.status_code == 302
+        assert response.url.startswith(self.login_url)
+
+    def test_signed_in_without_permission_is_forbidden(self):
+        self.client.force_login(self.create_user())
+        assert self.get().status_code == 403
+
+    def test_permitted_user_gets_the_table(self):
+        self.client.force_login(self.grant_user_admin(self.create_user()))
+        assert self.get().status_code == 200
+
+
+class AuthMenuVisibilityTest(UserMixin, TestCase):
+    """add_auth_menu offers the admin entries according to the hooks."""
+
+    def menu_html(self, user):
+        self.client.force_login(user)
+        return self.client.get(reverse('basic')).content.decode()
+
+    def test_plain_user_sees_neither_entry(self):
+        html = self.menu_html(self.create_user())
+        assert reverse('auth:user_admin_modal') not in html
+        assert reverse('auth:security_admin_modal') not in html
+
+    def test_permission_reveals_user_admin_only(self):
+        html = self.menu_html(self.grant_user_admin(self.create_user()))
+        assert reverse('auth:user_admin_modal') in html
+        assert reverse('auth:security_admin_modal') not in html
+
+    def test_superuser_sees_both(self):
+        html = self.menu_html(self.create_user(is_superuser=True, is_staff=True))
+        assert reverse('auth:user_admin_modal') in html
+        assert reverse('auth:security_admin_modal') in html
+
+    @override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.GroupAdminCustomise')
+    def test_group_membership_reveals_both(self):
+        user = self.create_user()
+        user.groups.add(Group.objects.create(name='user-admins'))
+        html = self.menu_html(user)
+        assert reverse('auth:user_admin_modal') in html
+        assert reverse('auth:security_admin_modal') in html
 
 
 class RememberCookieFlagsTest(UserMixin, TestCase):

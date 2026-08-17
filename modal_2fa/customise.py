@@ -1,5 +1,6 @@
 import ipaddress
 
+from django.contrib.auth import get_user_model
 from django.contrib.auth.views import PasswordResetView
 
 from .urls import make_url_patterns, pattern_dict
@@ -25,6 +26,12 @@ class CustomiseAuth(MicrosoftCustomiseMixin):
       - ``max_cookies(user) -> int``            @staticmethod  — max trusted devices per user (default 2)
       - ``is_ip_excluded(ip) -> bool``          @classmethod   — exempt an IP/CIDR from the shared-IP lockout
       - ``excluded_ips: list[str]``             class attr     — IPs/CIDRs feeding the default is_ip_excluded
+
+    Access hooks — note these take ``(user, request=None)``, not ``user`` alone
+    like the policy hooks above. ``request`` is supplied whenever the caller has
+    one, for permission systems that depend on session or site state:
+      - ``can_manage_users(user, request=None) -> bool``     @staticmethod  — user CRUD, user table, invites
+      - ``can_manage_security(user, request=None) -> bool``  @staticmethod  — security admin (lockouts, sessions)
 
     View hook (called per request with the bound view instance):
       - ``customise_view(view) -> None``        @staticmethod  — mutate the view (size, css, templates, title)
@@ -134,6 +141,29 @@ class CustomiseAuth(MicrosoftCustomiseMixin):
         configured -- otherwise a user for whom this returns False has no way in.
         """
         return True
+
+    @staticmethod
+    def can_manage_users(user, request=None):
+        """Whether ``user`` may create/edit users, see the user table, and send invites.
+
+        Default checks the ``change`` permission on the project's own user model
+        (via ``get_user_model()``), so it stays correct under a swapped
+        ``AUTH_USER_MODEL`` -- a hardcoded ``auth.change_user`` would name a model
+        that no longer exists. ``request`` is supplied whenever the caller has one;
+        override and use it for permission systems that depend on session or site
+        state rather than the built-in ``user.groups`` M2M.
+        """
+        model = get_user_model()
+        return user.has_perm(f'{model._meta.app_label}.change_{model._meta.model_name}')
+
+    @staticmethod
+    def can_manage_security(user, request=None):
+        """Whether ``user`` may reach security admin (lockouts, active sessions).
+
+        Default requires ``is_superuser``. Override for projects where superuser
+        status comes from group or role membership instead of the flag.
+        """
+        return user.is_superuser
 
     @staticmethod
     def allowed_remember(user):

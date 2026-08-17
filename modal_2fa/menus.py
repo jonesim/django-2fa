@@ -2,6 +2,8 @@ from ajax_helpers.utils import ajax_command
 from django.urls import reverse, NoReverseMatch
 from django_menus.menu import MenuItem, DividerItem
 
+from .utils import get_custom_auth
+
 
 def user_display(user):
     result = ' '.join([n for n in [user.first_name, user.last_name] if n])
@@ -26,7 +28,7 @@ def add_auth_menu(view):
             DividerItem()
         ]
 
-        if view.request.user.has_perm('auth.change_user'):
+        if get_custom_auth().can_manage_users(view.request.user, view.request):
             try:
                 user_admin = reverse('auth:user_admin_modal')
                 dropdown += [
@@ -37,7 +39,7 @@ def add_auth_menu(view):
             except NoReverseMatch:
                 pass
 
-        if view.request.user.is_superuser:
+        if get_custom_auth().can_manage_security(view.request.user, view.request):
             try:
                 security_admin = reverse('auth:security_admin_modal')
                 dropdown += [
