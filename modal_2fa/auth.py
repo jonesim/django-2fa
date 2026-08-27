@@ -21,7 +21,7 @@ from django_modals.modals import FormModal, Modal
 
 from .backends import CookieBackend
 from .models import RememberDeviceCookie, FailedLoginAttempt, WebauthnCredential
-from .utils import get_client_ip_address, get_custom_auth, safe_redirect_url
+from .utils import get_client_ip_address, get_cookie_backend_path, get_custom_auth, safe_redirect_url
 from .forms import CrispyPasswordChangeForm, CrispyPasswordResetForm, CrispySetPasswordForm, CrispyLoginForm, Form2FA,\
     RememberCookieForm
 from .webauthn import WebAuthnMixin, web_authn_script
@@ -241,7 +241,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
             return self.error_message(self._locked)
         if self.check_authentication(self.user):
             FailedLoginAttempt.clear_failed_attempts(self.request, self.user, use_ip=False)
-            auth_login(self.request, self.user, backend='modal_2fa.auth.CookieBackend')
+            auth_login(self.request, self.user, backend=get_cookie_backend_path())
             self.request.session['authentication_method'] = '2fa'
             return self.success_response()
         # A failed WebAuthn assertion is a second-factor guess like a wrong TOTP
@@ -287,7 +287,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
 
     def form_valid(self, form):
         FailedLoginAttempt.clear_failed_attempts(self.request, self.user, use_ip=False)
-        auth_login(self.request, self.user, backend='modal_2fa.auth.CookieBackend')
+        auth_login(self.request, self.user, backend=get_cookie_backend_path())
         if form.cleaned_data.get('remember'):
             return self.command_response(ajax_modal_replace(self.request, 'auth:confirm_remember',
                                                             modal_type=self.request.POST.get('modal_type')))
