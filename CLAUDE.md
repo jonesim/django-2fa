@@ -147,6 +147,7 @@ WAGTAIL_PASSWORD_MANAGEMENT_ENABLED = False
 - `<prefix>logout/` **mounts** `LogoutView` rather than redirecting — it's POST-only and Wagtail's admin posts to it.
 - `Wagtail2FAMiddleware` is the `AdminSite2FA.has_permission` equivalent: an authenticated session whose `authentication_method` isn't in `wagtail_2fa_methods` is sent to `auth:auth_2fa` with `next` set to the full path. `'cookie'` is excluded by default (a trusted-device cookie skips the second factor); `'microsoft'` is included so Entra users aren't locked out. Anonymous users are left to Wagtail's own redirect.
 - A device-less user pushed to `auth:auth_2fa` gets TOTP enrolment (`Modal2FA.get_device`), which is the intended "CMS always requires 2FA" behaviour.
+- Misconfiguration fails loudly: the middleware raises `ImproperlyConfigured` at startup if `<prefix>login/` doesn't resolve to the shadow view (include ordering wrong / `paths()` not mounted), and on the first gated request if `request.user` is missing (installed before `AuthenticationMiddleware`).
 - Tests use a fake Wagtail URLConf (`examples/wagtail_test_urls.py`) rather than adding Wagtail as a dependency.
 
 Not covered: device self-service (`auth:user_devices`, `auth:change_2fa`) still needs surfacing through a Wagtail hook, and the login page renders in modal_2fa's Bootstrap chrome, not Wagtail's.

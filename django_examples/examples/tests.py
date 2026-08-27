@@ -5,6 +5,7 @@ from unittest import mock
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group, Permission
+from django.core.exceptions import ImproperlyConfigured
 from django.shortcuts import resolve_url
 from django.test import RequestFactory, TestCase, override_settings
 from django.urls import reverse
@@ -20,6 +21,7 @@ from modal_2fa.customise import CustomiseAuth
 from modal_2fa.models import FailedLoginAttempt, RememberDeviceCookie, WebauthnCredential
 from modal_2fa.users import ModalUserForm
 from modal_2fa.utils import get_client_ip_address, safe_redirect_url
+from modal_2fa.wagtail_auth import Wagtail2FAMiddleware
 from modal_2fa.webauthn import WebAuthnMixin
 
 # Placeholder issuer; the guest-detection tests only compare idp against iss,
@@ -773,3 +775,23 @@ class WagtailDisabledTest(UserMixin, TestCase):
     def test_middleware_inert(self):
         self.client.force_login(self.create_user())
         assert self.client.get('/cms/').status_code == 200
+
+
+@override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.WagtailCustomise')
+class WagtailMisconfigurationTest(TestCase):
+    """Misconfigurations that would silently weaken the gate fail loudly instead."""
+
+    @override_settings(ROOT_URLCONF='examples.wagtail_misordered_test_urls')
+    def test_wagtail_include_above_shadow_refused_at_startup(self):
+        # Wagtail's real (unauthenticated) login wins the resolution, so the
+        # middleware would gate the admin around a still-open login. Refuse.
+        with self.assertRaisesMessage(ImproperlyConfigured, 'wagtailadmin_login'):
+            Wagtail2FAMiddleware(lambda request: HttpResponse())
+
+    @override_settings(ROOT_URLCONF='examples.wagtail_test_urls')
+    def test_missing_request_user_refused(self):
+        # Installed before AuthenticationMiddleware there is no request.user;
+        # failing open here would switch the 2FA gate off silently.
+        request = RequestFactory().get('/cms/pages/')
+        with self.assertRaisesMessage(ImproperlyConfigured, 'AuthenticationMiddleware'):
+            Wagtail2FAMiddleware.check_request(request)

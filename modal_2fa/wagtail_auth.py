@@ -19,7 +19,7 @@ from django.conf import settings
 from django.contrib.auth.views import LogoutView
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponseRedirect
-from django.urls import path, reverse
+from django.urls import Resolver404, path, resolve, reverse
 from django.utils.http import urlencode
 
 from .utils import get_custom_auth, safe_redirect_url
@@ -119,9 +119,34 @@ class Wagtail2FAMiddleware:
 
     def __init__(self, get_response):
         self.get_response = get_response
+        self.check_login_is_shadowed()
 
     def __call__(self, request):
         return self.check_request(request) or self.get_response(request)
+
+    @staticmethod
+    def check_login_is_shadowed():
+        """Fail at startup if Wagtail's real login would win the URL resolution.
+
+        With ``include(wagtailadmin_urls)`` above the ``paths()`` include, the
+        unauthenticated Wagtail login stays reachable (no lockout accounting, no
+        2FA) while this middleware still gates the rest of the admin -- a silent
+        half-working state. Refuse to start instead.
+        """
+        prefix = getattr(get_custom_auth(), 'wagtail_admin_prefix', None)
+        if not prefix:
+            return
+        login_path = wagtail_admin_root(prefix) + 'login/'
+        try:
+            match = resolve(login_path)
+        except Resolver404:
+            match = None
+        if match is None or match.func is not wagtail_login_redirect:
+            raise ImproperlyConfigured(
+                f'wagtail_admin_prefix is set but {login_path} does not resolve to the modal_2fa shadow login'
+                + (f' (it resolves to {match.view_name!r})' if match else ' (it does not resolve at all)')
+                + '. The CustomiseAuth.paths() include must appear in urlpatterns above '
+                  'include(wagtailadmin_urls), mounted at the project root.')
 
     @staticmethod
     def check_request(request):
@@ -135,8 +160,12 @@ class Wagtail2FAMiddleware:
             return None
         if any(request.path_info.startswith(root + exempt) for exempt in EXEMPT_PREFIXES):
             return None
-        user = getattr(request, 'user', None)
-        if user is None or not user.is_authenticated:
+        if not hasattr(request, 'user'):
+            # Failing open here would silently switch the 2FA gate off.
+            raise ImproperlyConfigured(
+                'Wagtail2FAMiddleware found no request.user -- it must be installed after '
+                "'django.contrib.auth.middleware.AuthenticationMiddleware'.")
+        if not request.user.is_authenticated:
             # Anonymous users are Wagtail's own redirect to WAGTAILADMIN_LOGIN_URL.
             return None
         if request.session.get('authentication_method') in customisation_class.wagtail_2fa_methods:

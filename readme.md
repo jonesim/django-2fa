@@ -182,6 +182,12 @@ Wagtail's:
         path('cms/', include(wagtailadmin_urls)),
     ]
 
+Misconfiguration fails loudly rather than silently weakening the gate: the
+middleware raises `ImproperlyConfigured` at startup if Wagtail's own login would
+win the URL resolution (includes in the wrong order, or `paths()` not mounted),
+and on the first gated request if it is installed before
+`AuthenticationMiddleware` (no `request.user`).
+
 `wagtail_2fa_methods` controls what the middleware accepts, defaulting to
 `('2fa', 'microsoft')`. A trusted-device cookie is deliberately *not* enough for
 the CMS, matching how the Django admin is gated; a user with no device is sent to
