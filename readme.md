@@ -182,10 +182,29 @@ Point `AUTHENTICATION_CUSTOMISATION` at a subclass of `CustomiseAuth`:
         def customise_view(view):
             view.size = 'md'                  # restyle any auth modal
 
-Common hooks: `user_2fa_optional`, `password_login_allowed`, `allowed_remember`,
-`max_cookies`, `can_manage_users`, `can_manage_security`, `customise_view`,
-`override_views` (swap any URL→view mapping), and the email template attributes
-for invitations and password resets.
+Common hooks: `user_2fa_optional`, `two_factor_enabled`, `password_login_allowed`,
+`allowed_remember`, `max_cookies`, `can_manage_users`, `can_manage_security`,
+`customise_view`, `override_views` (swap any URL→view mapping), and the email
+template attributes for invitations and password resets.
+
+### Protecting only part of a site
+
+`user_2fa_optional` asks whether 2FA is optional *for a user*. When the auth views
+cover only part of a larger project — a control panel on one host, or one schema of
+a multi-tenant app — the other question is whether a given request is even in the
+area 2FA protects. `two_factor_enabled(request)` answers that:
+
+    class MyCustomise(CustomiseAuth):
+
+        @staticmethod
+        def two_factor_enabled(request):
+            return request.get_host() == 'admin.example.com'
+
+Returning `False` makes `CookieBackend` behave as a plain `ModelBackend` for that
+request — no trusted-device or device lookup, and no part-login parked in the
+session for auth views that aren't routed there to consume. Without it such a
+project has to leave `ModelBackend` behind `CookieBackend` as a fall-through, and
+then defend against that fall-through wherever 2FA *is* required.
 
 ### Who may manage users and security
 

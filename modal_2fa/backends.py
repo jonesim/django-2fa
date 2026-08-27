@@ -43,6 +43,14 @@ class CookieBackend(ModelBackend):
                 # backend authenticates from verified claims (no password), so SSO
                 # sign-in for this same user is unaffected.
                 return None
+            if not self.customisation_class.two_factor_enabled(request):
+                # 2FA is out of scope for this request (a different host, schema or
+                # site to the one it protects): behave as a plain ModelBackend and
+                # hand the user straight back. Checked before the trusted-device
+                # lookup so a request from outside the 2FA area never reads
+                # modal_2fa's tables, and never parks a part_login the auth views
+                # in that area would not be there to consume.
+                return user
             if RememberDeviceCookie.test_cookie(request, user, active=True):
                 request.session['authentication_method'] = 'cookie'
                 return user
