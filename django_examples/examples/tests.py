@@ -564,6 +564,21 @@ class TwoFactorDisabledTest(UserMixin, TestCase):
         assert self.authenticate(self.request_with_session(), invalid_user) is None
 
 
+class ModalTitleTest(UserMixin, TestCase):
+    """Every auth modal should render a title rather than an empty header."""
+
+    def test_remove_2fa_modal_has_a_title(self):
+        from modal_2fa.auth import Modal2FARemove
+        assert Modal2FARemove.modal_title == 'Remove 2FA'
+
+    def test_remove_2fa_modal_renders_its_title(self):
+        user = self.create_TOTP_user()
+        self.client.force_login(user)
+        response = self.client.get(reverse('auth:remove_2fa'))
+        assert response.status_code == 200
+        assert 'Remove 2FA' in response.content.decode()
+
+
 class ClientIpTest(TestCase):
     """X-Forwarded-For is only trusted behind a configured reverse proxy."""
 
