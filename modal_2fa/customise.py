@@ -7,9 +7,10 @@ from .urls import make_url_patterns, pattern_dict
 from .auth import Modal2FA
 from .models import RememberDeviceCookie
 from .microsoft import MicrosoftCustomiseMixin, register_microsoft_urls
+from .wagtail_auth import WagtailCustomiseMixin, wagtail_url_patterns
 
 
-class CustomiseAuth(MicrosoftCustomiseMixin):
+class CustomiseAuth(MicrosoftCustomiseMixin, WagtailCustomiseMixin):
     """Per-project configuration hook for modal_2fa.
 
     Consumers subclass this and point ``settings.AUTHENTICATION_CUSTOMISATION``
@@ -38,6 +39,13 @@ class CustomiseAuth(MicrosoftCustomiseMixin):
 
     URL hook:
       - ``override_views() -> dict``            @staticmethod  — replace any name->(route, view) in pattern_dict
+
+    Wagtail (all inert unless the prefix is set — see wagtail_auth.py):
+      - ``wagtail_admin_prefix: str | None``    class attr     — prefix wagtailadmin_urls is mounted at, e.g. 'cms/'.
+        Setting it makes paths() shadow Wagtail's own login/logout/password-reset URLs, and enables
+        ``modal_2fa.wagtail_auth.Wagtail2FAMiddleware``. The include must sit *above* the Wagtail one.
+      - ``wagtail_2fa_methods: tuple[str]``     class attr     — authentication_method values the middleware
+        accepts for the Wagtail admin (default ``('2fa', 'microsoft')``)
 
     Email template attributes (read by the relevant auth views):
       - ``invite_email_template`` / ``invite_txt_email_template`` / ``invite_subject_template``
@@ -98,7 +106,9 @@ class CustomiseAuth(MicrosoftCustomiseMixin):
             patterns['force_logout'] = ('force-logout/<slug:slug>/', ForceLogoutModal)
         register_microsoft_urls(patterns)
         patterns.update(cls.override_views())
-        return make_url_patterns(patterns)
+        # The Wagtail shadow routes live at the project root, not under auth/,
+        # so they are appended to the returned list rather than to pattern_dict.
+        return make_url_patterns(patterns) + wagtail_url_patterns(cls)
 
     @staticmethod
     def customise_view(view):

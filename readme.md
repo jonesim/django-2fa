@@ -154,6 +154,39 @@ button. The rule is yours to define — e.g. by group:
         def password_login_allowed(user):
             return not user.groups.filter(name='sso-only').exists()
 
+## Optional: Wagtail
+
+Wagtail ships its own login, logout and password-reset views under its admin
+prefix, and has no equivalent of the Django admin's 2FA gate. Its login form does
+reach this package's backend, but it skips the lockout accounting and the 2FA
+step. Setting `wagtail_admin_prefix` makes `paths()` emit patterns that shadow
+those URLs, and enables a middleware that requires a second factor across the
+whole CMS. Wagtail itself is never imported — nothing here runs until the prefix
+is set.
+
+    # myapp/auth.py
+    class MyCustomise(CustomiseAuth):
+        wagtail_admin_prefix = 'cms/'       # the prefix wagtailadmin_urls is mounted at
+
+    # settings.py
+    MIDDLEWARE += ['modal_2fa.wagtail_auth.Wagtail2FAMiddleware']   # after AuthenticationMiddleware
+    WAGTAILADMIN_LOGIN_URL = 'auth:login'       # where Wagtail sends anonymous users
+    WAGTAIL_PASSWORD_RESET_ENABLED = False      # hide the now-dead links in Wagtail's own UI
+    WAGTAIL_PASSWORD_MANAGEMENT_ENABLED = False
+
+Django matches the **first** pattern that fits, so the include must come *above*
+Wagtail's:
+
+    urlpatterns = [
+        path('', include(MyCustomise.paths(include_admin=True))),
+        path('cms/', include(wagtailadmin_urls)),
+    ]
+
+`wagtail_2fa_methods` controls what the middleware accepts, defaulting to
+`('2fa', 'microsoft')`. A trusted-device cookie is deliberately *not* enough for
+the CMS, matching how the Django admin is gated; a user with no device is sent to
+the 2FA modal and enrols there.
+
 ## Customisation
 
 Point `AUTHENTICATION_CUSTOMISATION` at a subclass of `CustomiseAuth`:

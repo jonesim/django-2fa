@@ -8,6 +8,7 @@ from django.contrib.auth.models import Group, Permission
 from django.shortcuts import resolve_url
 from django.test import RequestFactory, TestCase, override_settings
 from django.urls import reverse
+from django.utils.http import urlencode
 
 from django.http import HttpResponse
 
@@ -59,6 +60,16 @@ class GroupAdminCustomise(CustomiseAuth):
         return request is not None and user.groups.filter(name='user-admins').exists()
 
     can_manage_users = can_manage_security = _in_admin_group
+
+
+class WagtailCustomise(CustomiseAuth):
+    # A project whose Wagtail admin is mounted at cms/ -- referenced by
+    # override_settings as 'examples.tests.WagtailCustomise' and imported by
+    # examples.wagtail_test_urls.
+    wagtail_admin_prefix = 'cms/'
+
+
+wagtail_middleware = settings.MIDDLEWARE + ['modal_2fa.wagtail_auth.Wagtail2FAMiddleware']
 
 
 class UserMixin:
@@ -658,3 +669,107 @@ class RememberCookieFlagsTest(UserMixin, TestCase):
         assert morsel['secure']
         assert morsel['httponly']
         assert morsel['samesite'] == 'Lax'
+
+
+@override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.WagtailCustomise',
+                   ROOT_URLCONF='examples.wagtail_test_urls',
+                   MIDDLEWARE=wagtail_middleware)
+class WagtailShadowUrlTest(UserMixin, TestCase):
+    """Wagtail's own auth URLs are shadowed by the modal_2fa equivalents.
+
+    The fake Wagtail admin returns 200 from every route, so a 302 here proves the
+    modal_2fa pattern won the resolution.
+    """
+
+    def test_login_redirects_to_modal_preserving_next(self):
+        response = self.client.get('/cms/login/?next=/cms/pages/')
+        assert response.status_code == 302
+        assert response.url == reverse('auth:login') + '?' + urlencode({'next': '/cms/pages/'})
+
+    def test_login_drops_unsafe_next(self):
+        # An off-site next falls back to the Wagtail admin root, never evil.com.
+        response = self.client.get('/cms/login/?next=https://evil.com/')
+        assert response.url == reverse('auth:login') + '?' + urlencode({'next': '/cms/'})
+
+    def test_logout_accepts_post(self):
+        # Wagtail's admin posts to its logout URL, so the shadow mounts LogoutView
+        # itself rather than redirecting (a 302 would downgrade the POST to GET).
+        self.client.force_login(self.create_user())
+        response = self.client.post('/cms/logout/')
+        assert response.status_code == 302
+        assert '_auth_user_id' not in self.client.session
+
+    def test_password_reset_urls_redirect_to_modal(self):
+        for url in ('/cms/password_reset/',
+                    '/cms/password_reset/done/',
+                    '/cms/password_reset/confirm/MQ/abcd-efgh/'):
+            response = self.client.get(url)
+            assert response.status_code == 302, url
+            assert response.url == reverse('auth:reset_password'), url
+        response = self.client.get('/cms/password_reset/complete/')
+        assert response.url == reverse('auth:login')
+
+
+@override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.WagtailCustomise',
+                   ROOT_URLCONF='examples.wagtail_test_urls',
+                   MIDDLEWARE=wagtail_middleware)
+class Wagtail2FAMiddlewareTest(UserMixin, TestCase):
+    """The Wagtail admin is gated on a second factor, as AdminSite2FA gates Django's."""
+
+    def _login(self, method=None):
+        self.client.force_login(self.create_user())
+        if method:
+            session = self.client.session
+            session['authentication_method'] = method
+            session.save()
+
+    def test_password_only_session_sent_to_2fa(self):
+        self._login()
+        response = self.client.get('/cms/pages/')
+        assert response.status_code == 302
+        assert response.url == reverse('auth:auth_2fa') + '?' + urlencode({'next': '/cms/pages/'})
+
+    def test_full_path_including_query_is_preserved(self):
+        self._login()
+        response = self.client.get('/cms/pages/?ordering=title')
+        assert response.url == reverse('auth:auth_2fa') + '?' + urlencode({'next': '/cms/pages/?ordering=title'})
+
+    def test_verified_session_allowed(self):
+        for method in ('2fa', 'microsoft'):
+            with self.subTest(method=method):
+                self._login(method)
+                assert self.client.get('/cms/').status_code == 200
+                self.client.logout()
+                self.User.objects.all().delete()
+
+    def test_cookie_session_is_not_a_second_factor(self):
+        # A trusted-device cookie skips the 2FA step, so it must not open the CMS.
+        self._login('cookie')
+        assert self.client.get('/cms/').status_code == 302
+
+    def test_anonymous_left_to_wagtail(self):
+        # Wagtail redirects anonymous users itself (WAGTAILADMIN_LOGIN_URL); the
+        # middleware must not intercept and mask that.
+        assert self.client.get('/cms/').status_code == 200
+
+    def test_shadowed_auth_urls_not_gated(self):
+        # Otherwise an unverified user could never log out or reach the login modal.
+        self._login()
+        assert self.client.get('/cms/login/').url.startswith(reverse('auth:login'))
+        assert self.client.get('/cms/password_reset/').url == reverse('auth:reset_password')
+
+    def test_other_urls_untouched(self):
+        self._login()
+        assert self.client.get(reverse('protected')).status_code == 200
+
+
+@override_settings(ROOT_URLCONF='examples.wagtail_off_test_urls', MIDDLEWARE=wagtail_middleware)
+class WagtailDisabledTest(UserMixin, TestCase):
+    """Without wagtail_admin_prefix nothing is registered and the middleware is inert."""
+
+    def test_urls_not_shadowed(self):
+        assert self.client.get('/cms/login/').status_code == 200
+
+    def test_middleware_inert(self):
+        self.client.force_login(self.create_user())
+        assert self.client.get('/cms/').status_code == 200
