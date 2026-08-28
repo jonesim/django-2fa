@@ -28,7 +28,7 @@ from django.utils.http import urlencode
 from django.views import View
 
 from .backends import CookieBackend
-from .utils import get_custom_auth, safe_redirect_url
+from .utils import get_cookie_backend_path, get_custom_auth, safe_redirect_url
 
 UserModel = get_user_model()
 
@@ -281,7 +281,7 @@ class MsCallbackView(MsAuthMixin, View):
         # (as Modal2FA does); the authentication_method marker records that this
         # was a Microsoft sign-in.
         if get_custom_auth().microsoft_satisfies_2fa(claims):
-            auth_login(request, user, backend='modal_2fa.auth.CookieBackend')
+            auth_login(request, user, backend=get_cookie_backend_path())
             request.session['authentication_method'] = 'microsoft'
             # Keep the verified ID-token claims so consumers can inspect them later
             # (cleared automatically on logout when the session is flushed).

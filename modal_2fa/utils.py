@@ -33,3 +33,32 @@ def get_client_ip_address(request):
 
 def get_custom_auth():
     return import_string(getattr(settings, 'AUTHENTICATION_CUSTOMISATION', 'modal_2fa.customise.CustomiseAuth'))
+
+
+DEFAULT_COOKIE_BACKEND_PATH = 'modal_2fa.auth.CookieBackend'
+
+
+def get_cookie_backend_path():
+    """Dotted path to record on the session when completing a login ourselves.
+
+    ``django.contrib.auth.login()`` stores this path, and ``get_user()`` only
+    restores the session if the stored path is listed in
+    ``AUTHENTICATION_BACKENDS`` -- so it has to be the path the project actually
+    registered. A project that subclasses ``CookieBackend`` (to scope it to a host
+    or a schema, say) registers its own path, and hardcoding ours would silently
+    log those users straight back out again.
+
+    Returns the first ``AUTHENTICATION_BACKENDS`` entry that is a ``CookieBackend``
+    subclass, falling back to our own path so behaviour is unchanged for the
+    documented single-backend setup.
+    """
+    from .backends import CookieBackend   # here, not at module scope: backends imports this module
+
+    for path in getattr(settings, 'AUTHENTICATION_BACKENDS', ()):
+        try:
+            backend = import_string(path)
+        except ImportError:
+            continue          # a broken entry is Django's problem to report, not ours
+        if isinstance(backend, type) and issubclass(backend, CookieBackend):
+            return path
+    return DEFAULT_COOKIE_BACKEND_PATH

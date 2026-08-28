@@ -3,7 +3,7 @@ import json
 from time import time
 from unittest import mock
 from django.conf import settings
-from django.contrib.auth import get_user_model
+from django.contrib.auth import BACKEND_SESSION_KEY, get_user_model
 from django.contrib.auth.models import Group, Permission
 from django.core.exceptions import ImproperlyConfigured
 from django.shortcuts import resolve_url
@@ -20,7 +20,7 @@ from modal_2fa.backends import CookieBackend
 from modal_2fa.customise import CustomiseAuth
 from modal_2fa.models import FailedLoginAttempt, RememberDeviceCookie, WebauthnCredential
 from modal_2fa.users import ModalUserForm
-from modal_2fa.utils import get_client_ip_address, safe_redirect_url
+from modal_2fa.utils import get_client_ip_address, get_cookie_backend_path, safe_redirect_url
 from modal_2fa.wagtail_auth import Wagtail2FAMiddleware
 from modal_2fa.webauthn import WebAuthnMixin
 
@@ -39,6 +39,22 @@ class ExcludedIPCustomise(CustomiseAuth):
     # CIDR covering the test client's 127.0.0.1 -- referenced by override_settings
     # as 'examples.tests.ExcludedIPCustomise'.
     excluded_ips = ['127.0.0.0/8']
+
+
+class TwoFactorOffCustomise(CustomiseAuth):
+    # 2FA is out of scope for every request -- referenced by override_settings as
+    # 'examples.tests.TwoFactorOffCustomise'. Stands in for a project that mounts the
+    # auth views over only part of a site (one host, or one schema) while
+    # authenticating users elsewhere through the same AUTHENTICATION_BACKENDS.
+    @staticmethod
+    def two_factor_enabled(request):
+        return False
+
+
+class SubclassedCookieBackend(CookieBackend):
+    # A project scoping the backend to its own needs registers its own dotted path --
+    # referenced by override_settings as 'examples.tests.SubclassedCookieBackend'.
+    pass
 
 
 class SsoOnlyCustomise(CustomiseAuth):
@@ -484,6 +500,153 @@ class SsoOnlyLoginTest(UserMixin, TestCase):
         assert response.status_code == 200
         # Correct password, but the user is never authenticated.
         assert '_auth_user_id' not in self.client.session
+
+
+class TwoFactorEnabledHookTest(UserMixin, TestCase):
+    """The two_factor_enabled scope hook: default on, and no request to scope against."""
+
+    def test_default_is_enabled(self):
+        assert CustomiseAuth.two_factor_enabled(RequestFactory().post('/')) is True
+
+    def test_no_request_still_answers(self):
+        # authenticate() can be called without a request; there is nothing to scope
+        # against, so the default applies rather than blowing up.
+        assert CustomiseAuth.two_factor_enabled(None) is True
+
+    def test_totp_user_is_held_at_2fa_when_enabled(self):
+        # The contrast for the disabled case below: same user, hook left at its default.
+        self.create_TOTP_user()
+        response = self.client.post(reverse('auth:login'), test_user)
+        assert response.status_code == 200
+        assert '_auth_user_id' not in self.client.session
+
+
+@override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.TwoFactorOffCustomise')
+class TwoFactorDisabledTest(UserMixin, TestCase):
+    """With two_factor_enabled -> False, CookieBackend is a plain ModelBackend.
+
+    A user who *has* a TOTP device is the interesting case: without the hook the
+    backend parks a part_login and returns None, so a login outside the 2FA area
+    fails unless ModelBackend is left behind CookieBackend to catch it.
+    """
+
+    def request_with_session(self):
+        # A real session (rather than a bare RequestFactory request) so that the
+        # unhooked behaviour runs to completion and each test below fails on its own
+        # assertion rather than on a missing-attribute error part way through.
+        request = RequestFactory().post(self.login_url)
+        request.session = {}
+        return request
+
+    def authenticate(self, request, user=test_user):
+        return CookieBackend().authenticate(
+            request, username=user['username'], password=user['password'])
+
+    def test_backend_returns_a_totp_user_directly(self):
+        self.create_TOTP_user()
+        user = self.authenticate(self.request_with_session())
+        assert user is not None
+        assert user.get_username() == test_user['username']
+
+    def test_no_part_login_is_parked(self):
+        # A parked part_login would be left behind for auth views that are not routed
+        # into this area to consume.
+        self.create_TOTP_user()
+        request = self.request_with_session()
+        self.authenticate(request)
+        assert CookieBackend.part_login_key not in request.session
+
+    def test_no_authentication_method_is_recorded(self):
+        # Nothing here cleared the second factor, so nothing should claim it did.
+        self.create_TOTP_user()
+        request = self.request_with_session()
+        self.authenticate(request)
+        assert 'authentication_method' not in request.session
+
+    def test_trusted_device_table_is_not_read(self):
+        # The point for a multi-tenant project: a request from outside the 2FA area
+        # must not touch modal_2fa's tables at all.
+        self.create_TOTP_user()
+        with mock.patch.object(RememberDeviceCookie, 'test_cookie', return_value=False) as test_cookie:
+            self.authenticate(self.request_with_session())
+        test_cookie.assert_not_called()
+
+    def test_http_login_completes_without_a_2fa_step(self):
+        self.create_TOTP_user()
+        response = self.client.post(reverse('auth:login'), test_user)
+        assert response.status_code == 200
+        assert '_auth_user_id' in self.client.session
+
+    def test_wrong_password_is_still_refused(self):
+        # Scoping 2FA out must not scope out authentication.
+        self.create_TOTP_user()
+        assert self.authenticate(self.request_with_session(), invalid_user) is None
+
+
+class ModalTitleTest(UserMixin, TestCase):
+    """Every auth modal should render a title rather than an empty header."""
+
+    def test_remove_2fa_modal_has_a_title(self):
+        from modal_2fa.auth import Modal2FARemove
+        assert Modal2FARemove.modal_title == 'Remove 2FA'
+
+    def test_remove_2fa_modal_renders_its_title(self):
+        user = self.create_TOTP_user()
+        self.client.force_login(user)
+        response = self.client.get(reverse('auth:remove_2fa'))
+        assert response.status_code == 200
+        assert 'Remove 2FA' in response.content.decode()
+
+
+class CookieBackendPathTest(TestCase):
+    """The dotted path recorded on the session when we complete a login ourselves."""
+
+    def test_default_single_backend(self):
+        with override_settings(AUTHENTICATION_BACKENDS=['modal_2fa.auth.CookieBackend']):
+            assert get_cookie_backend_path() == 'modal_2fa.auth.CookieBackend'
+
+    def test_subclass_path_is_used(self):
+        with override_settings(AUTHENTICATION_BACKENDS=['examples.tests.SubclassedCookieBackend']):
+            assert get_cookie_backend_path() == 'examples.tests.SubclassedCookieBackend'
+
+    def test_cookie_backend_found_behind_another_backend(self):
+        # Not simply the first entry: the CookieBackend one is what matters.
+        with override_settings(AUTHENTICATION_BACKENDS=[
+                'django.contrib.auth.backends.ModelBackend',
+                'examples.tests.SubclassedCookieBackend']):
+            assert get_cookie_backend_path() == 'examples.tests.SubclassedCookieBackend'
+
+    def test_falls_back_when_no_cookie_backend_registered(self):
+        with override_settings(AUTHENTICATION_BACKENDS=['django.contrib.auth.backends.ModelBackend']):
+            assert get_cookie_backend_path() == 'modal_2fa.auth.CookieBackend'
+
+    def test_unimportable_entry_is_skipped(self):
+        with override_settings(AUTHENTICATION_BACKENDS=[
+                'no.such.module.Backend', 'examples.tests.SubclassedCookieBackend']):
+            assert get_cookie_backend_path() == 'examples.tests.SubclassedCookieBackend'
+
+
+@override_settings(AUTHENTICATION_BACKENDS=['examples.tests.SubclassedCookieBackend'])
+class SubclassedBackendLoginTest(UserMixin, TestCase):
+    """A project that subclasses CookieBackend must stay logged in after 2FA.
+
+    django.contrib.auth.get_user() only restores a session whose recorded backend
+    path is listed in AUTHENTICATION_BACKENDS. Recording our own path when the
+    project registered a subclass means the session is discarded on the very next
+    request and the user is silently signed out again.
+    """
+
+    def test_2fa_login_survives_the_next_request(self):
+        self.create_TOTP_user()
+        response = self.client.post(reverse('auth:login'), test_user)
+        assert response.status_code == 200
+        response = self.client.post(reverse('auth:auth_2fa'), {'code': '154567'})
+        assert response.status_code == 200
+        assert self.client.session['authentication_method'] == '2fa'
+        # The session records the registered path, so it is honoured rather than dropped.
+        assert self.client.session[BACKEND_SESSION_KEY] == 'examples.tests.SubclassedCookieBackend'
+        # And the proof that matters: a protected page, on a fresh request.
+        assert self.client.get(reverse('protected')).status_code == 200
 
 
 class ClientIpTest(TestCase):
