@@ -21,6 +21,7 @@ class CustomiseAuth(MicrosoftCustomiseMixin):
 
     Policy hooks (called on the *class*, no instance/view bound):
       - ``user_2fa_optional(user) -> bool``       @staticmethod  — is 2FA optional for this user (default True)
+      - ``two_factor_enabled(request) -> bool``  @staticmethod  — does 2FA apply to this request at all (default True)
       - ``password_login_allowed(user) -> bool``  @staticmethod  — may this user log in with a password (default True)
       - ``allowed_remember(user) -> bool``        @staticmethod  — show the "remember this device" option
       - ``max_cookies(user) -> int``            @staticmethod  — max trusted devices per user (default 2)
@@ -128,6 +129,28 @@ class CustomiseAuth(MicrosoftCustomiseMixin):
 
         Return False to force a user without a TOTP/WebAuthn device through 2FA
         setup rather than letting them log in with a password alone.
+        """
+        return True
+
+    @staticmethod
+    def two_factor_enabled(request):
+        """Whether the 2FA flow applies to this request at all (default True).
+
+        ``user_2fa_optional`` answers "is 2FA optional *for this user*"; this answers
+        "is this request even in the area 2FA protects". They are different questions
+        for a project that mounts the auth views over part of a larger site — a
+        control panel on one host, or one schema of a multi-tenant app — and
+        authenticates users elsewhere through the same ``AUTHENTICATION_BACKENDS``.
+
+        Returning False makes ``CookieBackend`` behave as a plain ``ModelBackend``
+        for that request: no trusted-device lookup, no device lookup, and no
+        part_login parked in the session for auth views that are not routed there to
+        consume. Without it, such a project has to keep ``ModelBackend`` behind
+        ``CookieBackend`` as a fall-through, which then has to be defended against on
+        the side where 2FA *is* required.
+
+        ``request`` may be None: ``authenticate()`` can be called without one, and
+        there is then nothing to scope against, so the default answer applies.
         """
         return True
 
