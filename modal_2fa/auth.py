@@ -179,6 +179,8 @@ class UserDevices(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, Modal):
 
 class Modal2FARemove(CustomiseMixin, Modal):
 
+    modal_title = 'Remove 2FA'
+
     def button_confirm(self, **_kwargs):
         device = TOTPDevice.objects.filter(user=self.request.user).first()
         if device:
