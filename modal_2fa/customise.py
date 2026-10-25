@@ -137,8 +137,59 @@ class CustomiseAuth(MicrosoftCustomiseMixin, WagtailCustomiseMixin):
     def user_2fa_optional(user):
         """Whether 2FA is optional for ``user`` (default True).
 
-        Return False to force a user without a TOTP/WebAuthn device through 2FA
-        setup rather than letting them log in with a password alone.
+        Return False to force a user without a second factor (passkey or TOTP)
+        through 2FA setup rather than letting them log in with a password alone.
+
+        NOTE: the demo project's ``ExampleCustomise`` overrides this hook --
+        when testing with ``django_examples``, change it there, not here.
+        """
+        return True
+
+    @staticmethod
+    def allow_passkeys(user):
+        """Whether ``user`` may register and use passkeys (default True).
+
+        Return False to hide the passkey option from the 2FA setup screen and
+        the "Add passkey" button from Passkeys & trusted devices. The option is
+        also disabled automatically when the ``webauthn`` package isn't
+        installed.
+        """
+        return True
+
+    @staticmethod
+    def passkey_user_verification(user):
+        """User-verification requirement for passkey registration and login:
+        'discouraged' (default), 'preferred' or 'required'.
+
+        Passkeys here are a *second* factor -- the password has already been
+        entered -- so a touch proving possession is the point. 'discouraged'
+        keeps hardware keys touch-only; anything stronger makes browsers demand
+        the key's PIN (and Windows will force PIN setup on a PIN-less key).
+        Platform authenticators (Windows Hello, Face ID) verify the user
+        regardless. Raise it if passkeys must stand alone, e.g. for a future
+        passwordless flow.
+        """
+        return 'discouraged'
+
+    @staticmethod
+    def passkey_resident_key(user):
+        """Resident-key (discoverable credential) preference for new passkey
+        registrations: 'discouraged' (default), 'preferred' or 'required'.
+
+        'discouraged' keeps hardware security keys (YubiKeys etc.) registerable
+        without a PIN -- Windows in particular escalates anything stronger into
+        mandatory PIN setup on the key. Platform authenticators create synced
+        discoverable passkeys regardless of this value. Raise it only if you
+        plan a passwordless flow that must include hardware keys.
+        """
+        return 'discouraged'
+
+    @staticmethod
+    def allow_totp(user):
+        """Whether ``user`` may enrol an authenticator app (default True).
+
+        Return False to remove the authenticator-app option from the 2FA setup
+        screen, leaving passkeys as the only second factor on offer.
         """
         return True
 

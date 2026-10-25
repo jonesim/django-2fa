@@ -1,4 +1,4 @@
-from io import BytesIO
+﻿from io import BytesIO
 import qrcode
 
 from qrcode.image.svg import SvgPathFillImage
@@ -82,19 +82,52 @@ class Form2FA(CrispyForm):
             # submit button. Enforcement is in clean() -- this is just the UI.
             self.no_buttons = True
             return (HTML(f'<div class="alert alert-danger">{self.locked}</div>'),)
-        if not self.device.confirmed:
-            new_device = (HTML(render_to_string('modal_2fa/new_totp.html', {'svg': self.get_qr_code(self.device)})),
-                          HTML(web_authn_script()))
+        cancel = self.button('Cancel', dict(function='post_modal', button='cancel'), self.cancel_class)
+        if self.factor_mode == 'choice':
+            # First-time setup: no fields at all -- either factor is set up via
+            # its own button and clean() refuses anything else.
+            del self.fields['code']
+            del self.fields['remember']
+            if self.allow_passkeys:
+                self.buttons.append(self.button('Set up a passkey',
+                                                dict(function='post_modal', button='setup_passkey'), 'btn-primary'))
+            if self.allow_totp:
+                self.buttons.append(self.button('Use an authenticator app',
+                                                dict(function='post_modal', button='setup_totp'), 'btn-outline-secondary'))
+            self.buttons.append(cancel)
+            return (HTML(render_to_string('modal_2fa/2fa_choice.html', {'allow_passkeys': self.allow_passkeys,
+                                                                        'allow_totp': self.allow_totp})),
+                    HTML(web_authn_script()))
+        if self.factor_mode == 'passkey_only':
+            # Verification for a user whose only factor is a passkey: the
+            # browser prompt fires on load; the button re-fires it after a
+            # cancel or timeout. No code field, so nothing to submit.
+            del self.fields['code']
+            del self.fields['remember']
+            self.buttons += [self.button('Use passkey',
+                                         dict(function='post_modal', button='use_passkey'), 'btn-primary'),
+                             cancel]
+            return (HTML(render_to_string('modal_2fa/passkey_prompt.html')), HTML(web_authn_script()))
+        if self.factor_mode == 'totp_new':
+            layout = (HTML(render_to_string('modal_2fa/new_totp.html', {'svg': self.get_qr_code(self.device)})),)
+            self.buttons.append(self.submit_button())
+            if self.back_button:
+                self.buttons.append(self.button('Back', dict(function='post_modal', button='setup_back'),
+                                                'btn-outline-secondary'))
         else:
-            new_device = (HTML(web_authn_script()),)
-        self.buttons += [self.submit_button(),
-                        self.button('Cancel', dict(function='post_modal', button='cancel'), self.cancel_class)]
+            layout = (HTML(web_authn_script()),)
+            self.buttons.append(self.submit_button())
+            if self.has_passkey:
+                self.buttons.append(self.button('Use passkey',
+                                                dict(function='post_modal', button='use_passkey'),
+                                                'btn-outline-primary'))
+        self.buttons.append(cancel)
         if not self.allowed_remember:
             # noinspection PyTypeChecker
             del self.fields['remember']
-            return *new_device, Field('code')
+            return *layout, Field('code')
         else:
-            return *new_device, Field('code', 'remember')
+            return *layout, Field('code', 'remember')
 
     def clean(self):
         super(Form2FA, self).clean()
@@ -102,20 +135,45 @@ class Form2FA(CrispyForm):
             # Server-side guard: reject even a crafted POST carrying a code while
             # locked, regardless of what post_init chose to render.
             raise ValidationError(self.locked)
-        if 'code' in self.cleaned_data:
-            if not authenticate(self.request, device=self.device, token=self.cleaned_data['code']):
-                raise ValidationError('Incorrect Code')
-            else:
-                self.device.confirmed = True
-                self.device.save()
+        if self.factor_mode not in ('totp', 'totp_new'):
+            # The code field is deleted in the other modes, so an empty POST
+            # would otherwise validate and reach form_valid -> auth_login with
+            # no second factor at all.
+            raise ValidationError('Choose a verification method')
+        if 'code' not in self.cleaned_data:
+            raise ValidationError('Enter code')
+        if not authenticate(self.request, device=self.device, token=self.cleaned_data['code']):
+            raise ValidationError('Incorrect Code')
+        self.device.confirmed = True
+        self.device.save()
         return self.cleaned_data
 
-    def __init__(self, request, device, *args, allowed_remember=True, locked=None, **kwargs):
+    def __init__(self, request, device=None, *args, mode='totp', allowed_remember=True, locked=None,
+                 has_passkey=False, back_button=False, allow_passkeys=True, allow_totp=True, **kwargs):
         self.request = request
         self.device = device
+        self.factor_mode = mode
         self.allowed_remember = allowed_remember
         self.locked = locked
+        self.has_passkey = has_passkey
+        self.back_button = back_button
+        self.allow_passkeys = allow_passkeys
+        self.allow_totp = allow_totp
         super(Form2FA, self).__init__(*args, **kwargs)
+
+
+class PasskeyNameForm(CrispyForm):
+    class Meta:
+        modal_title = 'Name passkey'
+
+    name = CharField(max_length=60, label='Name')
+
+    def post_init(self, *args, **kwargs):
+        self.buttons.append(self.submit_button())
+        self.buttons.append(self.button('Skip', dict(function='post_modal', button='cancel'), self.cancel_class))
+        return (HTML('<p>Passkey added. Give it a name so you can recognise it later '
+                     '(e.g. "Work laptop" or "iPhone").</p>'),
+                Field('name'))
 
 
 class RememberCookieForm(CrispyForm):

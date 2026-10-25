@@ -4,8 +4,16 @@ from django_otp import user_has_device
 
 from .models import RememberDeviceCookie
 from .utils import get_custom_auth
+from .webauthn import user_has_passkey
 
 UserModel = get_user_model()
+
+
+def user_has_second_factor(user):
+    # A passkey is as much a second factor as an OTP device -- without this a
+    # passkey-only user would be logged in on the password alone when 2FA is
+    # optional.
+    return user_has_device(user) or user_has_passkey(user)
 
 
 class CookieBackend(ModelBackend):
@@ -54,7 +62,11 @@ class CookieBackend(ModelBackend):
             if RememberDeviceCookie.test_cookie(request, user, active=True):
                 request.session['authentication_method'] = 'cookie'
                 return user
-            elif not user_has_device(user) and self.customisation_class.user_2fa_optional(user):
+            elif not user_has_second_factor(user) and self.customisation_class.user_2fa_optional(user):
+                # No gate accepts 'password' (admin wants '2fa', Wagtail
+                # '2fa'/'microsoft') -- this is recorded for display and so the
+                # session's standing is explicit rather than an absent key.
+                request.session['authentication_method'] = 'password'
                 return user
             elif user:
                 self.set_part_login(request, user.username)

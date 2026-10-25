@@ -13,8 +13,9 @@ from django.utils.http import urlencode
 
 from django.http import HttpResponse
 
-from django_modals.modals import ModalException
+from django_modals.modals.modals import ModalException
 from django_modals.processes import PROCESS_EDIT
+from django_otp.plugins.otp_totp.models import TOTPDevice
 
 from modal_2fa.backends import CookieBackend
 from modal_2fa.customise import CustomiseAuth
@@ -33,6 +34,26 @@ test_user = {'username': 'test@test.com',
 
 invalid_user = {'username': 'test@test.com',
                 'password': 'bad_password'}
+
+# Fixed TOTP parameters matching UserMixin.create_TOTP_user: with t0 backdated
+# ~3 steps, code '154567' verifies.
+TEST_TOTP = dict(key='2a2bbba1092ffdd25a328ad1a0a5f5d61d7aacc4', step=30, digits=6, tolerance=0, drift=0)
+
+
+class Mandatory2FACustomise(CustomiseAuth):
+    # 2FA enforced for everyone -- referenced by override_settings as
+    # 'examples.tests.Mandatory2FACustomise'.
+    @staticmethod
+    def user_2fa_optional(user):
+        return False
+
+
+class DiscoverablePasskeyCustomise(Mandatory2FACustomise):
+    # Opts hardware keys into discoverable credentials -- referenced by
+    # override_settings as 'examples.tests.DiscoverablePasskeyCustomise'.
+    @staticmethod
+    def passkey_resident_key(user):
+        return 'preferred'
 
 
 class ExcludedIPCustomise(CustomiseAuth):
@@ -158,7 +179,8 @@ class LoginTest(UserMixin, TestCase):
 
     def test_2fa_cancel_without_part_login(self):
         # An already-authenticated user can reach the 2FA modal with no part_login;
-        # cancelling must not 500 on a missing session key.
+        # cancelling must not 500 on a missing session key, and must keep their
+        # session (only a mid-login cancel abandons the login).
         user = self.create_user()
         self.client.force_login(user)
         response = self.client.post(reverse('auth:auth_2fa'),
@@ -166,10 +188,8 @@ class LoginTest(UserMixin, TestCase):
                                     content_type='application/json',
                                     HTTP_X_REQUESTED_WITH='XMLHttpRequest')
         assert response.status_code == 200
-        # Confirm button_cancel actually ran (not a fallthrough): it re-opens login
-        # and logs the user out.
-        assert {'function': 'show_modal', 'modal': reverse('auth:login')} in response.json()
-        assert '_auth_user_id' not in self.client.session
+        assert {'function': 'close'} in response.json()
+        assert '_auth_user_id' in self.client.session
 
     def test_TOPT_login(self):
         self.create_TOTP_user()
@@ -460,6 +480,317 @@ class WebAuthnSignCountTest(UserMixin, TestCase):
         with mock.patch('modal_2fa.webauthn.verify_authentication_response') as verify:
             assert harness.check_authentication(user) is False
         verify.assert_not_called()
+
+
+@override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.Mandatory2FACustomise')
+class TwoFactorSetupChoiceTest(UserMixin, TestCase):
+    """A user with no second factor gets the setup choice screen, not an instant QR."""
+
+    def _part_login(self):
+        user = self.create_user()
+        response = self.client.post(reverse('auth:login'), test_user)
+        assert {'function': 'show_modal', 'modal': reverse('auth:auth_2fa')} in response.json()
+        return user
+
+    def _button(self, name):
+        return self.client.post(reverse('auth:auth_2fa'), data=json.dumps({'button': name}),
+                                content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+
+    def test_choice_screen_and_no_junk_device(self):
+        self._part_login()
+        response = self.client.get(reverse('auth:auth_2fa'))
+        content = response.content.decode()
+        assert 'setup_passkey' in content
+        assert 'setup_totp' in content
+        assert 'id_code' not in content
+        # The old flow wrote an unconfirmed TOTPDevice on every GET.
+        assert TOTPDevice.objects.count() == 0
+
+    def test_totp_path_completes_login(self):
+        user = self._part_login()
+        response = self._button('setup_totp')
+        assert 'id_code' in response.content.decode()
+        device = TOTPDevice.objects.get(user=user, confirmed=False)
+        for field, value in TEST_TOTP.items():
+            setattr(device, field, value)
+        device.t0 = int(time() - (30 * 3))
+        device.save()
+        response = self.client.post(reverse('auth:auth_2fa'), {'code': '154567'})
+        assert response.status_code == 200
+        assert self.client.session['authentication_method'] == '2fa'
+        assert '_auth_user_id' in self.client.session
+        assert TOTPDevice.objects.get(user=user).confirmed
+
+    def test_back_returns_to_choice(self):
+        user = self._part_login()
+        self._button('setup_totp')
+        assert TOTPDevice.objects.filter(user=user).exists()
+        response = self._button('setup_back')
+        assert not TOTPDevice.objects.filter(user=user).exists()
+        assert 'setup_passkey' in response.content.decode()
+
+    def test_bare_post_cannot_bypass_choice(self):
+        # The code field is deleted in choice mode; a crafted POST must not
+        # reach form_valid and log in with no second factor.
+        self._part_login()
+        response = self.client.post(reverse('auth:auth_2fa'), {})
+        assert response.status_code == 200
+        assert '_auth_user_id' not in self.client.session
+        self.client.post(reverse('auth:auth_2fa'), {'code': '123456'})
+        assert '_auth_user_id' not in self.client.session
+
+
+class PasskeyOnlyLoginTest(UserMixin, TestCase):
+    """A passkey alone is a second factor: no TOTP required, and password alone no longer suffices."""
+
+    def _passkey_user(self):
+        user = self.create_user()
+        credential = WebauthnCredential.objects.create(
+            user=user, rp_id='localhost', credential_public_key='AAAA',
+            credential_id='abc123', sign_count=5, transports='internal,hybrid')
+        return user, credential
+
+    def test_password_alone_does_not_log_in(self):
+        # Even with 2FA optional (the default customise), a passkey counts as a
+        # second factor so the backend must part-login, not log in.
+        self._passkey_user()
+        response = self.client.post(reverse('auth:login'), test_user)
+        assert {'function': 'show_modal', 'modal': reverse('auth:auth_2fa')} in response.json()
+        assert self.client.session.get('part_login') == test_user['username']
+        assert '_auth_user_id' not in self.client.session
+
+    def test_2fa_modal_is_passkey_only(self):
+        self._passkey_user()
+        self.client.post(reverse('auth:login'), test_user)
+        response = self.client.get(reverse('auth:auth_2fa'))
+        content = response.content.decode()
+        assert '"authenticate"' in content            # prompt auto-fires on load
+        assert 'use_passkey' in content               # manual retry button
+        assert 'id_code' not in content               # no TOTP field
+        assert 'setup_totp' not in content            # and no enrolment offer mid-login
+        assert 'internal' in content                  # stored transports echoed to the browser
+
+    def test_passkey_completes_login(self):
+        self._passkey_user()
+        self.client.post(reverse('auth:login'), test_user)
+        self.client.get(reverse('auth:auth_2fa'))     # generates auth_challenge
+        verified = mock.Mock(new_sign_count=6)
+        with mock.patch('modal_2fa.webauthn.verify_authentication_response', return_value=verified), \
+                mock.patch('modal_2fa.webauthn.base64url_to_bytes', return_value=b''):
+            response = self.client.post(reverse('auth:auth_2fa'),
+                                        {'ajax_method': 'auth', 'data': json.dumps({'id': 'abc123'})},
+                                        HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert response.status_code == 200
+        assert self.client.session['authentication_method'] == '2fa'
+        assert '_auth_user_id' in self.client.session
+        assert 'part_login' not in self.client.session
+
+    def test_use_passkey_button_returns_fresh_challenge(self):
+        self._passkey_user()
+        self.client.post(reverse('auth:login'), test_user)
+        response = self.client.post(reverse('auth:auth_2fa'), data=json.dumps({'button': 'use_passkey'}),
+                                    content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert response.json()[0]['function'] == 'authenticate'
+
+    def test_cancelled_dialog_is_not_an_error(self):
+        self._passkey_user()
+        self.client.post(reverse('auth:login'), test_user)
+        response = self.client.post(reverse('auth:auth_2fa'), {'ajax_method': 'cancelled'},
+                                    HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert response.status_code == 200
+        assert response.json() == []
+        assert FailedLoginAttempt.objects.count() == 0
+
+    def test_passkey_only_user_can_add_totp(self):
+        # The cross-platform escape hatch: a signed-in passkey-only user adds an
+        # authenticator app via auth:change_2fa.
+        user, _ = self._passkey_user()
+        self.client.force_login(user)
+        response = self.client.get(reverse('auth:change_2fa'))
+        assert 'id_code' in response.content.decode()
+        device = TOTPDevice.objects.get(user=user, confirmed=False)
+        for field, value in TEST_TOTP.items():
+            setattr(device, field, value)
+        device.t0 = int(time() - (30 * 3))
+        device.save()
+        self.client.post(reverse('auth:change_2fa'), {'code': '154567'})
+        assert TOTPDevice.objects.filter(user=user, confirmed=True).exists()
+
+
+@override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.Mandatory2FACustomise')
+class PasskeyRegistrationTest(UserMixin, TestCase):
+
+    registration_response = {'authenticatorAttachment': 'platform', 'response': {'transports': ['internal', 'hybrid']}}
+
+    def _part_login(self):
+        user = self.create_user()
+        self.client.post(reverse('auth:login'), test_user)
+        return user
+
+    def test_registration_options(self):
+        self._part_login()
+        response = self.client.post(reverse('auth:auth_2fa'), data=json.dumps({'button': 'setup_passkey'}),
+                                    content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        command = response.json()[0]
+        assert command['function'] == 'register_authentication'
+        creation = json.loads(command['creation'])
+        # 'discouraged' for both keeps hardware keys (YubiKeys) touch-only --
+        # anything stronger makes browsers demand/force a PIN on the key, and
+        # the password already covers the knowledge factor.
+        assert creation['authenticatorSelection']['residentKey'] == 'discouraged'
+        assert creation['authenticatorSelection']['userVerification'] == 'discouraged'
+
+    @override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.DiscoverablePasskeyCustomise')
+    def test_resident_key_hook(self):
+        self._part_login()
+        response = self.client.post(reverse('auth:auth_2fa'), data=json.dumps({'button': 'setup_passkey'}),
+                                    content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        creation = json.loads(response.json()[0]['creation'])
+        assert creation['authenticatorSelection']['residentKey'] == 'preferred'
+
+    def test_register_completes_login(self):
+        user = self._part_login()
+        self.client.post(reverse('auth:auth_2fa'), data=json.dumps({'button': 'setup_passkey'}),
+                         content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        verified = mock.Mock(credential_public_key=b'pub', credential_id=b'cid', sign_count=0)
+        with mock.patch('modal_2fa.webauthn.verify_registration_response', return_value=verified):
+            response = self.client.post(reverse('auth:auth_2fa'),
+                                        {'ajax_method': 'register',
+                                         'data': json.dumps(self.registration_response)},
+                                        HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert response.status_code == 200
+        credential = WebauthnCredential.objects.get(user=user)
+        assert credential.name == 'This device'
+        assert credential.transports == 'internal,hybrid'
+        assert self.client.session['authentication_method'] == '2fa'
+        assert '_auth_user_id' in self.client.session
+        assert 'part_login' not in self.client.session
+
+    def test_existing_credential_excluded_with_transports(self):
+        user = self.create_user()
+        WebauthnCredential.objects.create(user=user, rp_id='localhost', credential_public_key='AAAA',
+                                          credential_id='abc123', sign_count=0, transports='internal')
+        self.client.force_login(user)
+        response = self.client.post(reverse('auth:user_devices'), data=json.dumps({'button': 'add_webauthn'}),
+                                    content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        creation = json.loads(response.json()[0]['creation'])
+        assert creation['excludeCredentials'][0]['transports'] == ['internal']
+
+    def test_devices_modal_registration_offers_naming(self):
+        user = self.create_user()
+        self.client.force_login(user)
+        self.client.post(reverse('auth:user_devices'), data=json.dumps({'button': 'add_webauthn'}),
+                         content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        verified = mock.Mock(credential_public_key=b'pub', credential_id=b'cid', sign_count=0)
+        with mock.patch('modal_2fa.webauthn.verify_registration_response', return_value=verified):
+            response = self.client.post(reverse('auth:user_devices'),
+                                        {'ajax_method': 'register',
+                                         'data': json.dumps({'response': {'transports': ['usb']}})},
+                                        HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        credential = WebauthnCredential.objects.get(user=user)
+        assert credential.name == 'Security key'
+        content = response.content.decode()
+        assert 'Name passkey' in content              # naming modal, not a silent close
+        assert {'function': 'close'} not in response.json()
+
+    def test_rename_own_passkey_only(self):
+        user = self.create_user()
+        credential = WebauthnCredential.objects.create(user=user, rp_id='localhost', credential_public_key='AAAA',
+                                                       credential_id='abc123', sign_count=0, name='This device')
+        self.client.force_login(user)
+        self.client.post(reverse('auth:name_passkey', args=[f'pk-{credential.pk}']), {'name': 'Work laptop'})
+        credential.refresh_from_db()
+        assert credential.name == 'Work laptop'
+        other = self.create_user(username='other@test.com')
+        self.client.force_login(other)
+        with self.assertRaises(ModalException):
+            self.client.get(reverse('auth:name_passkey', args=[f'pk-{credential.pk}']))
+
+
+class PasswordOnlySessionTest(UserMixin, TestCase):
+
+    def test_password_only_login_marks_session(self):
+        self.create_user()
+        self.client.post(reverse('auth:login'), test_user)
+        assert '_auth_user_id' in self.client.session
+        # Recorded for display/menus; no gate (admin, Wagtail) accepts 'password'.
+        assert self.client.session['authentication_method'] == 'password'
+
+
+class UserDevicesSecurityTest(UserMixin, TestCase):
+
+    def _other_users_rows(self):
+        other = self.create_user(username='other@test.com')
+        credential = WebauthnCredential.objects.create(user=other, rp_id='localhost', credential_public_key='AAAA',
+                                                       credential_id='abc123', sign_count=0)
+        cookie = RememberDeviceCookie.objects.create(user=other, active=True, name='other laptop')
+        return credential, cookie
+
+    def test_anonymous_redirected_to_login(self):
+        for url_name in ('auth:user_devices', 'auth:change_2fa', 'auth:remove_2fa', 'auth:confirm_remember'):
+            with self.subTest(url=url_name):
+                response = self.client.get(reverse(url_name))
+                assert response.status_code == 302
+                assert response.url == reverse('auth:login')
+
+    def test_cannot_remove_another_users_rows(self):
+        credential, cookie = self._other_users_rows()
+        self.client.force_login(self.create_user())
+        for button in ('remove_webauthn', 'confirm_remove_webauthn'):
+            self.client.post(reverse('auth:user_devices'),
+                             data=json.dumps({'button': button, 'id': credential.id}),
+                             content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        for url_name in ('auth:user_devices', 'auth:confirm_remember'):
+            self.client.post(reverse(url_name),
+                             data=json.dumps({'button': 'remove_device', 'id': cookie.id}),
+                             content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert WebauthnCredential.objects.filter(id=credential.id).exists()
+        assert RememberDeviceCookie.objects.filter(id=cookie.id).exists()
+
+    def test_remove_own_passkey_confirms_then_refreshes(self):
+        user = self.create_user()
+        credential = WebauthnCredential.objects.create(user=user, rp_id='localhost', credential_public_key='AAAA',
+                                                       credential_id='abc123', sign_count=0, name='Old key')
+        self.client.force_login(user)
+        response = self.client.post(reverse('auth:user_devices'),
+                                    data=json.dumps({'button': 'remove_webauthn', 'id': credential.id}),
+                                    content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert 'Remove passkey' in response.content.decode()
+        assert WebauthnCredential.objects.filter(id=credential.id).exists()
+        response = self.client.post(reverse('auth:user_devices'),
+                                    data=json.dumps({'button': 'confirm_remove_webauthn', 'id': credential.id}),
+                                    content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert not WebauthnCredential.objects.filter(id=credential.id).exists()
+        assert {'function': 'reload'} not in response.json()
+
+
+class Remove2FAAllFactorsTest(UserMixin, TestCase):
+
+    def test_confirm_removes_every_factor(self):
+        user = self.create_TOTP_user()
+        WebauthnCredential.objects.create(user=user, rp_id='localhost', credential_public_key='AAAA',
+                                          credential_id='abc123', sign_count=0)
+        RememberDeviceCookie.objects.create(user=user, active=True, name='laptop')
+        self.client.force_login(user)
+        content = self.client.get(reverse('auth:remove_2fa')).content.decode()
+        assert '1 passkey' in content
+        assert '1 trusted device' in content
+        self.client.post(reverse('auth:remove_2fa'), data=json.dumps({'button': 'confirm'}),
+                         content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert not user.totpdevice_set.exists()
+        assert not user.webauthn.exists()
+        assert not RememberDeviceCookie.objects.filter(user=user).exists()
+
+
+class Change2FAGuardTest(UserMixin, TestCase):
+
+    def test_post_without_pending_device_fails_cleanly(self):
+        # The unconfirmed row can vanish (another tab): the code must fail as
+        # 'Incorrect Code', not 500 on device=None.
+        self.client.force_login(self.create_TOTP_user())
+        response = self.client.post(reverse('auth:change_2fa'), {'code': '000000'})
+        assert response.status_code == 200
+        assert 'Incorrect Code' in response.content.decode()
 
 
 class PasswordLoginAllowedHookTest(UserMixin, TestCase):
@@ -926,6 +1257,18 @@ class Wagtail2FAMiddlewareTest(UserMixin, TestCase):
     def test_other_urls_untouched(self):
         self._login()
         assert self.client.get(reverse('protected')).status_code == 200
+
+    def test_unenrolled_user_gets_choice_screen(self):
+        # "CMS always requires 2FA": a device-less user pushed to auth:auth_2fa
+        # now lands on the setup choice screen (passkey or authenticator app).
+        self._login()
+        redirect = self.client.get('/cms/pages/')
+        response = self.client.get(redirect.url)
+        assert response.status_code == 200
+        content = response.content.decode()
+        assert 'setup_passkey' in content
+        assert 'setup_totp' in content
+        assert TOTPDevice.objects.count() == 0
 
 
 @override_settings(ROOT_URLCONF='examples.wagtail_off_test_urls', MIDDLEWARE=wagtail_middleware)

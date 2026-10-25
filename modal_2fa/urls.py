@@ -29,6 +29,7 @@ pattern_dict = {
     'logout': ('logout/', LogoutView),
     'confirm_remember': ('confirm_remember/', auth.ConfirmCookieModal),
     'user_devices': ('user-devices/', auth.UserDevices),
+    'name_passkey': ('name-passkey/<slug:slug>/', auth.PasskeyNameModal),
     'change_2fa': ('change-2fa/', auth.Change2FA),
     'invite_user': ('user_invite/<uidb64>/<token>/', auth.UserInvite),
     'user': ('user/<slug>', users.ModalUserForm),

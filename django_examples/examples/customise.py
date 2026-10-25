@@ -25,7 +25,11 @@ class ExampleCustomise(CustomiseAuth):
 
     @staticmethod
     def user_2fa_optional(user):
-        return True
+        # 2FA is optional in the demo unless the user is in the 'require-2fa'
+        # group. NOTE: don't hard-return False here -- the test suite runs
+        # under this class and its plain-login tests then fail; put your dev
+        # users in the group instead (user admin or `manage.py shell`).
+        return not user.groups.filter(name='require-2fa').exists()
 
     @staticmethod
     def password_login_allowed(user):

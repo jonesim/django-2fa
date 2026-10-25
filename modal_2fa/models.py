@@ -73,9 +73,18 @@ class WebauthnCredential(models.Model):
     created_on = models.DateTimeField(auto_now_add=True)
     last_used_on = models.DateTimeField(null=True)
     sign_count = models.IntegerField()
+    name = models.CharField(max_length=60, blank=True, default='')
+    # Comma-joined transports reported at registration (e.g. 'internal,hybrid').
+    # Echoed back in allow/exclude credential descriptors so browsers can offer
+    # the right prompt (e.g. cross-device QR for a phone-held passkey on a PC).
+    # Empty means unknown and browsers then offer every option.
+    transports = models.CharField(max_length=120, blank=True, default='')
+
+    def transport_list(self):
+        return [t for t in self.transports.split(',') if t]
 
     def __str__(self):
-        return f'{self.rp_id} {self.credential_id[:8]}'
+        return self.name or f'{self.rp_id} {self.credential_id[:8]}'
 
 
 class FailedLoginAttempt(models.Model):

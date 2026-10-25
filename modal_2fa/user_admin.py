@@ -6,6 +6,7 @@ from django_datatables.datatables import DatatableView, DatatableTable
 from django_datatables.columns import DatatableColumn
 from .users import UserAdminPermissionMixin, UserAdminViewPermissionMixin
 from .utils import get_custom_auth
+from .webauthn import get_rp_id
 
 UserModel = get_user_model()
 
@@ -53,6 +54,8 @@ def add_user_columns(table):
         'username',
         DatatableColumn(column_name='TOTP', title='TOTP',
                         annotations={'TOTP': Count('totpdevice__id', filter=Q(totpdevice__confirmed=True))}),
+        DatatableColumn(column_name='Passkeys', title='Passkeys',
+                        annotations={'Passkeys': Count('webauthn__id', filter=Q(webauthn__rp_id=get_rp_id()))}),
         Cookies(column_name='Cookies'),
         Optional2fa(column_name='2FA', title='2FA'),
         Password(column_name='Password'),

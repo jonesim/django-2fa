@@ -4,11 +4,13 @@
 
 Drop-in two-factor authentication for Django, presented through Bootstrap modals
 (via [django-nested-modals](https://pypi.org/project/django-nested-modals/)).
-It replaces the default admin login and adds TOTP, WebAuthn, trusted devices,
+It replaces the default admin login and adds passkeys, TOTP, trusted devices,
 brute-force lockout, email invites, and optional "Sign in with Microsoft".
 
+* **Passkeys (WebAuthn / FIDO2)** – Windows Hello, Face ID / Touch ID, YubiKeys; a passkey
+  alone satisfies the second factor — no authenticator app required. Users can name,
+  rename and remove their passkeys.
 * **TOTP** – authenticator apps (Google Authenticator, Authy, etc.) with an on-screen QR code
-* **WebAuthn / FIDO2** – Windows Hello, Face ID / Touch ID, YubiKeys and other passkeys
 * **Trusted devices** – an optional cookie to skip 2FA on a named device (the key rotates on each use, so a copied cookie stops working)
 * **Lockout** – throttle repeated failures by username and by IP (proxy-aware)
 * **Microsoft / Entra sign-in** – optional single-tenant SSO, off unless configured
@@ -71,10 +73,20 @@ modals.
 
 1. The user submits credentials to `ModalLoginView`, verified by `CookieBackend`.
 2. If a valid trusted-device cookie is present → log in directly.
-3. Else if the user has no TOTP device and 2FA is optional for them → log in directly.
+3. Else if the user has no second factor (neither passkey nor TOTP) and 2FA is
+   optional for them → log in directly.
 4. Otherwise the username is parked in the session and the 2FA modal opens.
-5. `Modal2FA` verifies a TOTP code or a WebAuthn credential, then completes login.
+5. `Modal2FA` verifies a passkey or a TOTP code, then completes login. A user with
+   no factor yet gets a **setup choice screen** — set up a passkey (recommended,
+   one click into the browser/OS dialog) or an authenticator app (QR code); either
+   alone completes the login and satisfies 2FA from then on.
 6. The user may optionally name and trust the device to skip 2FA next time.
+
+A passkey registered on a phone still works on another machine: browsers offer
+cross-device sign-in (a QR code confirmed on the phone), and stored transport
+hints steer them to the right prompt. Passkey-only users can also add an
+authenticator app later ("Set up authenticator app" in the user menu) as a
+device-independent backup.
 
 ## Lockout settings (optional)
 
@@ -190,8 +202,9 @@ and on the first gated request if it is installed before
 
 `wagtail_2fa_methods` controls what the middleware accepts, defaulting to
 `('2fa', 'microsoft')`. A trusted-device cookie is deliberately *not* enough for
-the CMS, matching how the Django admin is gated; a user with no device is sent to
-the 2FA modal and enrols there.
+the CMS, matching how the Django admin is gated; a user with no second factor is
+sent to the 2FA modal and enrols there via the setup choice screen (passkey or
+authenticator app).
 
 ## Customisation
 
@@ -221,10 +234,16 @@ Point `AUTHENTICATION_CUSTOMISATION` at a subclass of `CustomiseAuth`:
         def customise_view(view):
             view.size = 'md'                  # restyle any auth modal
 
-Common hooks: `user_2fa_optional`, `two_factor_enabled`, `password_login_allowed`,
-`allowed_remember`, `max_cookies`, `can_manage_users`, `can_manage_security`,
-`customise_view`, `override_views` (swap any URL→view mapping), and the email
-template attributes for invitations and password resets.
+Common hooks: `user_2fa_optional`, `password_login_allowed`, `allow_passkeys` /
+`allow_totp` (which second factors are offered — disable one and the setup screen
+offers only the other), `passkey_user_verification` / `passkey_resident_key`
+(both default `'discouraged'` so hardware keys such as YubiKeys stay touch-only —
+stronger values make browsers demand or force a PIN on the key; raise them only
+for a future passwordless flow), `allowed_remember`, `max_cookies`,
+`can_manage_users`, `can_manage_security`, `customise_view`, `override_views`
+(swap any URL→view mapping), and the email template attributes for invitations
+and password resets.
+
 
 ### Protecting only part of a site
 
@@ -244,6 +263,7 @@ request — no trusted-device or device lookup, and no part-login parked in the
 session for auth views that aren't routed there to consume. Without it such a
 project has to leave `ModelBackend` behind `CookieBackend` as a fall-through, and
 then defend against that fall-through wherever 2FA *is* required.
+
 
 ### Who may manage users and security
 
@@ -276,8 +296,8 @@ model, override both:
 
 ## Adding the user menu
 
-Inject the signed-in-user dropdown (2FA management, authorised devices, logout)
-into any view's menu:
+Inject the signed-in-user dropdown (2FA management, passkeys & trusted devices,
+logout) into any view's menu:
 
     from modal_2fa.menus import add_auth_menu
 

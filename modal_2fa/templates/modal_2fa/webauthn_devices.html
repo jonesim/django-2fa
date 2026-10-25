@@ -1,20 +1,25 @@
 {% load ajax_helpers modal_tags %}
 <div class="m-2">
+    <h5>Passkeys</h5>
     {% if not webauthn %}
-        <p>No authorised credentials</p>
+        <p>No passkeys registered</p>
     {% else %}
-        <h5>Authorised Credentials</h5>
-    <table class="table table-sm ">
+    <table class="table table-sm">
         <tr>
-            <th>Device</th>
+            <th>Name</th>
+            <th>Added</th>
             <th>Last used</th>
             <th></th>
         </tr>
         {% for w in webauthn %}
             <tr>
                 <td>{{ w }}</td>
+                <td>{{ w.created_on|date }}</td>
                 <td>{{ w.last_used_on|date }}</td>
-                <td>{% modal_button_method 'Remove' 'remove_webauthn' id=w.id css_class='btn btn-sm btn-outline-warning' %}</td>
+                <td class="text-nowrap">
+                    {% modal_button_method 'Rename' 'rename_webauthn' id=w.id css_class='btn btn-sm btn-outline-secondary' %}
+                    {% modal_button_method 'Remove' 'remove_webauthn' id=w.id css_class='btn btn-sm btn-outline-warning' %}
+                </td>
             </tr>
         {% endfor %}
     </table>

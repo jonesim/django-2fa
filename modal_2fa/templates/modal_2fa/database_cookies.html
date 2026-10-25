@@ -1,14 +1,15 @@
 {% load ajax_helpers modal_tags %}
 <div class="m-2">
     {% if not no_title %}
-        <h5>Authorised Device Cookies</h5>
+        <h5>Trusted devices</h5>
     {% endif %}
     {% if not cookies %}
-        <p>No authorised device cookies</p>
+        <p>No trusted devices</p>
     {% else %}
-    <table class="table table-sm ">
+    <p class="text-muted small">Trusted devices skip the two-factor step when signing in from that browser.</p>
+    <table class="table table-sm">
         <tr>
-            <th>Cookie</th>
+            <th>Device</th>
             <th>Last used</th>
             <th></th>
         </tr>

@@ -42,9 +42,9 @@ Provides drop-in 2FA authentication for Django projects using `django-nested-mod
 |---|---|
 | `auth.py` | All authentication modal views (login, 2FA, password reset/change, device management) |
 | `backends.py` | `CookieBackend` — extends `ModelBackend` with cookie-bypass and partial-login session state |
-| `models.py` | `RememberDeviceCookie`, `WebauthnCredential`, `FailedLoginAttempt` |
-| `forms.py` | Crispy form wrappers for Django auth forms + `Form2FA` (TOTP + QR code) |
-| `webauthn.py` | `WebAuthnMixin` for FIDO2/WebAuthn registration and authentication |
+| `models.py` | `RememberDeviceCookie`, `WebauthnCredential` (passkeys: has `name` + `transports`), `FailedLoginAttempt` |
+| `forms.py` | Crispy form wrappers for Django auth forms + `Form2FA` (mode-driven: choice / passkey_only / totp / totp_new / locked) + `PasskeyNameForm` |
+| `webauthn.py` | `WebAuthnMixin` for passkey (FIDO2/WebAuthn) registration and authentication; `user_has_passkey`, `credential_descriptor` |
 | `customise.py` | `CustomiseAuth` — override this class to configure package behaviour per-project |
 | `menus.py` | `add_auth_menu(view)` — injects the user dropdown into any view's menu |
 | `user_admin.py` | `UserTable`/`UserAdminModal` — datatable + modal for user management |
@@ -57,10 +57,12 @@ Provides drop-in 2FA authentication for Django projects using `django-nested-mod
 
 1. `ModalLoginView` processes credentials via `CookieBackend.authenticate()`
 2. If user has a trusted cookie → login directly (`session['authentication_method'] = 'cookie'`)
-3. If user has no TOTP device and `user_2fa_optional()` returns `True` → login directly
+3. If user has **no second factor** (`user_has_second_factor` = confirmed TOTP device OR passkey for the current rp_id) and `user_2fa_optional()` returns `True` → login directly (`authentication_method = 'password'`; no gate accepts that value)
 4. Otherwise → stores username in `session['part_login']` and redirects to `Modal2FA`
-5. `Modal2FA` verifies TOTP token or WebAuthn credential → completes login
+5. `Modal2FA` resolves a **mode** (`Modal2FA.get_mode()`): `totp` (confirmed device — code field, plus auto-fired passkey prompt and a "Use passkey" button if they have one), `passkey_only` (passkey but no TOTP — prompt auto-fires, retry button, deliberately **no** TOTP enrolment offer mid-login), `totp_new` (QR enrolment, reached via the choice screen — `session['totp_setup']`), or `choice` (no factor at all — first-time setup screen offering "Set up a passkey" / "Use an authenticator app"; either alone completes login and sets `authentication_method = '2fa'`)
 6. Optionally redirects to `ConfirmCookieModal` to name and trust the device
+
+Passkey completion also sets `authentication_method = '2fa'` (indistinguishable from TOTP downstream, by design). Passkey management (add / rename / confirm-remove) lives in `UserDevices` ("Passkeys & trusted devices") + `PasskeyNameModal` (`auth:name_passkey`); registration/login options come from two hooks, both defaulting to `'discouraged'` so hardware keys stay touch-only: `passkey_user_verification(user)` (stronger values make browsers demand the key's PIN — unnecessary friction for a second factor, since the password was already entered) and `passkey_resident_key(user)` (stronger values make Windows force PIN setup on PIN-less keys). `exclude_credentials` prevents duplicate registration, and stored `transports` are echoed back so browsers offer cross-device (QR) sign-in for phone-held passkeys. A passkey-only user adds TOTP later via `auth:change_2fa` ("Set up authenticator app" in the menu). `Modal2FARemove` deletes TOTP + passkeys + cookies together. The menus gate on what the user has (`user_has_device` / `user_has_passkey`), not on the session marker.
 
 ### Customisation Pattern
 
@@ -74,6 +76,7 @@ AUTHENTICATION_CUSTOMISATION = 'myapp.auth.MyCustomise'
 Key hooks to override:
 
 - `user_2fa_optional(user)` — whether 2FA is enforced for a given user (default: `True`)
+- `allow_passkeys(user)` / `allow_totp(user)` — which second factors are offered on the setup choice screen and in the devices modal (default: both `True`; passkeys also auto-disable if the `webauthn` package is missing)
 - `password_login_allowed(user)` — whether a user may log in with a password (default: `True`); return `False` to make a user **Entra-only** (password rejected at the backend, must use "Sign in with Microsoft")
 - `allowed_remember(user)` — whether the "remember this device" option is shown
 - `max_cookies(user)` — max trusted devices per user (default: 2)
@@ -146,7 +149,7 @@ WAGTAIL_PASSWORD_MANAGEMENT_ENABLED = False
 - `<prefix>login/` redirects to `auth:login` preserving a safe `next`; `password_reset/*` redirect to `auth:reset_password`.
 - `<prefix>logout/` **mounts** `LogoutView` rather than redirecting — it's POST-only and Wagtail's admin posts to it.
 - `Wagtail2FAMiddleware` is the `AdminSite2FA.has_permission` equivalent: an authenticated session whose `authentication_method` isn't in `wagtail_2fa_methods` is sent to `auth:auth_2fa` with `next` set to the full path. `'cookie'` is excluded by default (a trusted-device cookie skips the second factor); `'microsoft'` is included so Entra users aren't locked out. Anonymous users are left to Wagtail's own redirect.
-- A device-less user pushed to `auth:auth_2fa` gets TOTP enrolment (`Modal2FA.get_device`), which is the intended "CMS always requires 2FA" behaviour.
+- A device-less user pushed to `auth:auth_2fa` gets the 2FA setup choice screen (passkey or authenticator app), which is the intended "CMS always requires 2FA" behaviour.
 - Misconfiguration fails loudly: the middleware raises `ImproperlyConfigured` at startup if `<prefix>login/` doesn't resolve to the shadow view (include ordering wrong / `paths()` not mounted), and on the first gated request if `request.user` is missing (installed before `AuthenticationMiddleware`).
 - Tests use a fake Wagtail URLConf (`examples/wagtail_test_urls.py`) rather than adding Wagtail as a dependency.
 

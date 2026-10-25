@@ -1,0 +1,14 @@
+<div class="m-2">
+    <p>Protect your account with a second factor. Choose how you want to verify it's you when signing in:</p>
+    {% if allow_passkeys %}
+        <p class="mb-1"><b>Passkey</b> (recommended) &mdash; use your fingerprint, face or device PIN.
+            One click, nothing to type.</p>
+        <p class="text-muted small">You can rename or remove passkeys later under
+            <i>Passkeys &amp; trusted devices</i>.</p>
+    {% endif %}
+    {% if allow_totp %}
+        <p class="mb-1"><b>Authenticator app</b> &mdash; scan a QR code with an app such as Google
+            Authenticator, Authy or Microsoft Authenticator and type the 6-digit code it shows.</p>
+        <p class="text-muted small">Works on any device, so it's also a good backup alongside a passkey.</p>
+    {% endif %}
+</div>
