@@ -11,7 +11,11 @@ from django.forms.fields import CharField, BooleanField
 from django.template.loader import render_to_string
 from django.utils.safestring import mark_safe
 
-from crispy_forms.layout import Field, HTML
+try:
+    from django_modals.layout import HTML
+    from django_modals.fields import FieldEx as Field
+except ImportError:  # django-nested-modals < 0.1 renders with crispy-forms
+    from crispy_forms.layout import Field, HTML
 
 from django_modals.helper import crispy_modal_link
 from django_modals.forms import CrispyFormMixin, CrispyForm
