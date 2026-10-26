@@ -13,7 +13,10 @@ from django.utils.http import urlencode
 
 from django.http import HttpResponse
 
-from django_modals.modals.modals import ModalException
+try:
+    from django_modals.modals.modals import ModalException
+except ImportError:  # django-nested-modals < 0.1 has a flat modals module
+    from django_modals.modals import ModalException
 from django_modals.processes import PROCESS_EDIT
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
