@@ -28,6 +28,8 @@ class CustomiseAuth(MicrosoftCustomiseMixin, WagtailCustomiseMixin):
       - ``max_cookies(user) -> int``            @staticmethod  — max trusted devices per user (default 2)
       - ``is_ip_excluded(ip) -> bool``          @classmethod   — exempt an IP/CIDR from the shared-IP lockout
       - ``excluded_ips: list[str]``             class attr     — IPs/CIDRs feeding the default is_ip_excluded
+      - ``factor_management_methods: tuple[str]`` class attr   — authentication_method values allowed to manage
+        second factors without a step-up (default ``('2fa', 'microsoft')``; 'cookie' is deliberately excluded)
 
     Access hooks — note these take ``(user, request=None)``, not ``user`` alone
     like the policy hooks above. ``request`` is supplied whenever the caller has
@@ -67,6 +69,13 @@ class CustomiseAuth(MicrosoftCustomiseMixin, WagtailCustomiseMixin):
     # per-user lockout still applies. Consumers can either set this list or
     # override is_ip_excluded() for dynamic logic.
     excluded_ips = []   # e.g. ['10.0.0.0/24', '203.0.113.5']
+
+    # Sessions that may add, change or remove second factors (and trusted
+    # devices) directly. Any other session of a user who has a factor -- a
+    # trusted-device cookie login, or one from before the user enrolled -- is
+    # sent through the 2FA modal first, so it can't enrol a factor of its own
+    # and upgrade itself to '2fa'.
+    factor_management_methods = ('2fa', 'microsoft')
 
     @classmethod
     def is_ip_excluded(cls, ip_address):

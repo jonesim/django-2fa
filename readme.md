@@ -88,6 +88,12 @@ hints steer them to the right prompt. Passkey-only users can also add an
 authenticator app later ("Set up authenticator app" in the user menu) as a
 device-independent backup.
 
+Managing second factors (passkeys & trusted devices, changing the authenticator
+app, removing 2FA) needs a session that proved one: a user signed in by a
+trusted-device cookie is asked for their passkey or code first. The accepted
+sessions are set by `factor_management_methods` on `CustomiseAuth` (default
+`('2fa', 'microsoft')`).
+
 ## Lockout settings (optional)
 
 Repeated failures are throttled per username and per IP. Defaults shown:

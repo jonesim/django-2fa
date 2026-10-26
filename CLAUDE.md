@@ -83,6 +83,7 @@ Key hooks to override:
 - `override_views()` — replace any URL→view mapping in `pattern_dict`
 - `customise_view(view)` — called on every auth view; use to set modal size, CSS, templates
 - `excluded_ips` / `is_ip_excluded(ip)` — IP/CIDR allowlist exempt from the **shared-IP** lockout (per-user lockout still applies); see below
+- `factor_management_methods` — `authentication_method` values that may use the factor-management modals (`user_devices`, `change_2fa`, `remove_2fa`, `confirm_remember`, `name_passkey`) directly; default `('2fa', 'microsoft')`. `AuthGateMixin` steps any other session of a user who **has** a factor (e.g. a `'cookie'` login) up through `Modal2FA` first, so it can't enrol its own factor and upgrade itself to `'2fa'`. A user with no factor passes straight through to enrol one, and their first passkey added in `UserDevices` marks the session `'2fa'` (as the login setup screen does)
 - Email template attributes (`invite_email_template`, `reset_password_email_template`, etc.)
 
 ### URL Registration

@@ -176,7 +176,10 @@ class WebAuthnMixin:
             credentials.sign_count = authentication_verification.new_sign_count
             credentials.last_used_on = timezone.now()
             credentials.save()
-        except InvalidAuthenticationResponse as error:
+        except (InvalidAuthenticationResponse, KeyError, ValueError, TypeError) as error:
+            # KeyError covers a missing auth_challenge: it's popped on success, so
+            # a double-submitted or replayed assertion lands here, not in a 500.
+            # ValueError/TypeError cover a missing or malformed 'data' body.
             self.last_error = error
             return False
         self.request.session.pop('auth_challenge', None)

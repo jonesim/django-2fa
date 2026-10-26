@@ -137,6 +137,14 @@ class UserMixin:
             codename=f'change_{model._meta.model_name}'))
         return model.objects.get(pk=user.pk)
 
+    def login_as(self, user, method='2fa'):
+        """force_login plus the authentication_method marker a real login records --
+        the factor-management modals step up any session without an accepted one."""
+        self.client.force_login(user)
+        session = self.client.session
+        session['authentication_method'] = method
+        session.save()
+
     def create_TOTP_user(self):
         user = self.create_user()
         user.totpdevice_set.create(
@@ -587,6 +595,27 @@ class PasskeyOnlyLoginTest(UserMixin, TestCase):
         assert self.client.session['authentication_method'] == '2fa'
         assert '_auth_user_id' in self.client.session
         assert 'part_login' not in self.client.session
+        # A double-submit / replay finds the challenge already consumed: a clean
+        # error, not a 500.
+        with mock.patch('modal_2fa.webauthn.verify_authentication_response', return_value=verified), \
+                mock.patch('modal_2fa.webauthn.base64url_to_bytes', return_value=b''):
+            response = self.client.post(reverse('auth:auth_2fa'),
+                                        {'ajax_method': 'auth', 'data': json.dumps({'id': 'abc123'})},
+                                        HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert response.status_code == 200
+        assert 'Could not sign in with passkey' in response.content.decode()
+
+    def test_malformed_assertion_fails_cleanly(self):
+        self._passkey_user()
+        self.client.post(reverse('auth:login'), test_user)
+        self.client.get(reverse('auth:auth_2fa'))
+        for data in ({}, {'data': 'not json'}, {'data': json.dumps({'no_id': 1})}, {'data': '[]'}):
+            with self.subTest(data=data):
+                response = self.client.post(reverse('auth:auth_2fa'), {'ajax_method': 'auth', **data},
+                                            HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+                assert response.status_code == 200
+                assert 'Could not sign in with passkey' in response.content.decode()
+        assert '_auth_user_id' not in self.client.session
 
     def test_use_passkey_button_returns_fresh_challenge(self):
         self._passkey_user()
@@ -608,7 +637,7 @@ class PasskeyOnlyLoginTest(UserMixin, TestCase):
         # The cross-platform escape hatch: a signed-in passkey-only user adds an
         # authenticator app via auth:change_2fa.
         user, _ = self._passkey_user()
-        self.client.force_login(user)
+        self.login_as(user)
         response = self.client.get(reverse('auth:change_2fa'))
         assert 'id_code' in response.content.decode()
         device = TOTPDevice.objects.get(user=user, confirmed=False)
@@ -673,7 +702,7 @@ class PasskeyRegistrationTest(UserMixin, TestCase):
         user = self.create_user()
         WebauthnCredential.objects.create(user=user, rp_id='localhost', credential_public_key='AAAA',
                                           credential_id='abc123', sign_count=0, transports='internal')
-        self.client.force_login(user)
+        self.login_as(user)
         response = self.client.post(reverse('auth:user_devices'), data=json.dumps({'button': 'add_webauthn'}),
                                     content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
         creation = json.loads(response.json()[0]['creation'])
@@ -695,12 +724,15 @@ class PasskeyRegistrationTest(UserMixin, TestCase):
         content = response.content.decode()
         assert 'Name passkey' in content              # naming modal, not a silent close
         assert {'function': 'close'} not in response.json()
+        # A first factor counts as 2FA, so the naming modal isn't stepped up.
+        assert self.client.session['authentication_method'] == '2fa'
+        assert self.client.get(reverse('auth:name_passkey', args=[f'pk-{credential.pk}'])).status_code == 200
 
     def test_rename_own_passkey_only(self):
         user = self.create_user()
         credential = WebauthnCredential.objects.create(user=user, rp_id='localhost', credential_public_key='AAAA',
                                                        credential_id='abc123', sign_count=0, name='This device')
-        self.client.force_login(user)
+        self.login_as(user)
         self.client.post(reverse('auth:name_passkey', args=[f'pk-{credential.pk}']), {'name': 'Work laptop'})
         credential.refresh_from_db()
         assert credential.name == 'Work laptop'
@@ -754,7 +786,7 @@ class UserDevicesSecurityTest(UserMixin, TestCase):
         user = self.create_user()
         credential = WebauthnCredential.objects.create(user=user, rp_id='localhost', credential_public_key='AAAA',
                                                        credential_id='abc123', sign_count=0, name='Old key')
-        self.client.force_login(user)
+        self.login_as(user)
         response = self.client.post(reverse('auth:user_devices'),
                                     data=json.dumps({'button': 'remove_webauthn', 'id': credential.id}),
                                     content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
@@ -774,7 +806,7 @@ class Remove2FAAllFactorsTest(UserMixin, TestCase):
         WebauthnCredential.objects.create(user=user, rp_id='localhost', credential_public_key='AAAA',
                                           credential_id='abc123', sign_count=0)
         RememberDeviceCookie.objects.create(user=user, active=True, name='laptop')
-        self.client.force_login(user)
+        self.login_as(user)
         content = self.client.get(reverse('auth:remove_2fa')).content.decode()
         assert '1 passkey' in content
         assert '1 trusted device' in content
@@ -790,10 +822,65 @@ class Change2FAGuardTest(UserMixin, TestCase):
     def test_post_without_pending_device_fails_cleanly(self):
         # The unconfirmed row can vanish (another tab): the code must fail as
         # 'Incorrect Code', not 500 on device=None.
-        self.client.force_login(self.create_TOTP_user())
+        self.login_as(self.create_TOTP_user())
         response = self.client.post(reverse('auth:change_2fa'), {'code': '000000'})
         assert response.status_code == 200
         assert 'Incorrect Code' in response.content.decode()
+
+
+class FactorManagementStepUpTest(UserMixin, TestCase):
+    """A session that never proved the user's existing factor can't manage factors."""
+
+    gated = ('auth:user_devices', 'auth:change_2fa', 'auth:remove_2fa', 'auth:confirm_remember')
+
+    def test_cookie_session_is_stepped_up(self):
+        self.login_as(self.create_TOTP_user(), method='cookie')
+        for url_name in self.gated:
+            with self.subTest(url=url_name):
+                response = self.client.get(reverse(url_name))
+                assert response.status_code == 302
+                assert response.url == reverse('auth:auth_2fa') + '?' + urlencode({'next': reverse(url_name)})
+                response = self.client.get(reverse(url_name), HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+                assert response.json() == [{'function': 'show_modal', 'modal': reverse('auth:auth_2fa')}]
+
+    def test_cookie_session_cannot_enrol_new_totp(self):
+        # The bypass: enrolling a fresh secret would set '2fa' and delete the
+        # factor this session never proved.
+        user = self.create_TOTP_user()
+        self.login_as(user, method='cookie')
+        self.client.post(reverse('auth:change_2fa'), {'code': '154567'})
+        assert TOTPDevice.objects.filter(user=user).count() == 1
+        assert self.client.session['authentication_method'] == 'cookie'
+
+    def test_unmarked_session_of_passkey_user_is_stepped_up(self):
+        # e.g. a password-only session from before the user had a passkey.
+        user = self.create_user()
+        WebauthnCredential.objects.create(user=user, rp_id='localhost', credential_public_key='AAAA',
+                                          credential_id='abc123', sign_count=0)
+        self.client.force_login(user)
+        assert self.client.get(reverse('auth:remove_2fa')).status_code == 302
+        self.client.post(reverse('auth:remove_2fa'), data=json.dumps({'button': 'confirm'}),
+                         content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert user.webauthn.exists()
+
+    def test_accepted_methods_pass(self):
+        for method in ('2fa', 'microsoft'):
+            with self.subTest(method=method):
+                self.login_as(self.create_TOTP_user(), method=method)
+                assert self.client.get(reverse('auth:change_2fa')).status_code == 200
+                self.User.objects.all().delete()
+
+    def test_user_without_a_factor_can_enrol(self):
+        self.login_as(self.create_user(), method='password')
+        assert self.client.get(reverse('auth:change_2fa')).status_code == 200
+        assert self.client.get(reverse('auth:user_devices')).status_code == 200
+
+    def test_step_up_then_manage(self):
+        user = self.create_TOTP_user()
+        self.login_as(user, method='cookie')
+        self.client.post(reverse('auth:auth_2fa'), {'code': '154567'})
+        assert self.client.session['authentication_method'] == '2fa'
+        assert self.client.get(reverse('auth:change_2fa')).status_code == 200
 
 
 class PasswordLoginAllowedHookTest(UserMixin, TestCase):
@@ -926,7 +1013,7 @@ class ModalTitleTest(UserMixin, TestCase):
 
     def test_remove_2fa_modal_renders_its_title(self):
         user = self.create_TOTP_user()
-        self.client.force_login(user)
+        self.login_as(user)
         response = self.client.get(reverse('auth:remove_2fa'))
         assert response.status_code == 200
         assert 'Remove 2FA' in response.content.decode()
@@ -980,6 +1067,22 @@ class SubclassedBackendLoginTest(UserMixin, TestCase):
         # The session records the registered path, so it is honoured rather than dropped.
         assert self.client.session[BACKEND_SESSION_KEY] == 'examples.tests.SubclassedCookieBackend'
         # And the proof that matters: a protected page, on a fresh request.
+        assert self.client.get(reverse('protected')).status_code == 200
+
+    @override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.Mandatory2FACustomise')
+    def test_passkey_setup_login_survives_the_next_request(self):
+        # The setup choice screen's passkey path completes the login too.
+        self.create_user()
+        self.client.post(reverse('auth:login'), test_user)
+        self.client.post(reverse('auth:auth_2fa'), data=json.dumps({'button': 'setup_passkey'}),
+                         content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        verified = mock.Mock(credential_public_key=b'pub', credential_id=b'cid', sign_count=0)
+        with mock.patch('modal_2fa.webauthn.verify_registration_response', return_value=verified):
+            self.client.post(reverse('auth:auth_2fa'),
+                             {'ajax_method': 'register', 'data': json.dumps({'response': {}})},
+                             HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert self.client.session['authentication_method'] == '2fa'
+        assert self.client.session[BACKEND_SESSION_KEY] == 'examples.tests.SubclassedCookieBackend'
         assert self.client.get(reverse('protected')).status_code == 200
 
 

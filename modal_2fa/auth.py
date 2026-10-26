@@ -19,7 +19,7 @@ from django_modals.helper import modal_button_method, modal_button, ajax_modal_r
 
 from django_modals.modals import FormModal, Modal
 
-from .backends import CookieBackend
+from .backends import CookieBackend, user_has_second_factor
 from .models import RememberDeviceCookie, FailedLoginAttempt, WebauthnCredential
 from .utils import get_client_ip_address, get_cookie_backend_path, get_custom_auth, safe_redirect_url
 from .forms import CrispyPasswordChangeForm, CrispyPasswordResetForm, CrispySetPasswordForm, CrispyLoginForm, Form2FA,\
@@ -39,10 +39,13 @@ class CustomiseMixin:
 
 
 class AuthGateMixin:
-    """Login-required gate for the modals that manage the signed-in user's own
-    second factors. No step-up check is needed: any authenticated session for a
-    user who has a second factor necessarily arrived via 2fa/cookie/microsoft,
-    because the backend part-logins everyone else."""
+    """Gate for the modals that manage the signed-in user's own second factors.
+
+    Being logged in isn't enough once the user has a factor: a trusted-device
+    cookie session never proved it, and enrolling a new factor here would
+    upgrade that session to '2fa'. Sessions whose authentication_method isn't
+    in factor_management_methods are sent through Modal2FA as a step-up first.
+    A user with no factor yet passes straight through so they can enrol one."""
 
     def dispatch(self, request, *args, **kwargs):
         if not request.user.is_authenticated:
@@ -50,6 +53,14 @@ class AuthGateMixin:
                 return HttpResponseRedirect(reverse('auth:login'))
             # noinspection PyUnresolvedReferences
             return self.command_response('redirect', url=reverse('auth:login'))
+        # noinspection PyUnresolvedReferences
+        if (request.session.get('authentication_method') not in self.customisation_class.factor_management_methods
+                and user_has_second_factor(request.user)):
+            if not is_ajax(request):
+                return HttpResponseRedirect(reverse('auth:auth_2fa') + '?'
+                                            + urlencode({'next': request.get_full_path()}))
+            # noinspection PyUnresolvedReferences
+            return self.command_response('show_modal', modal=reverse('auth:auth_2fa'))
         # noinspection PyUnresolvedReferences
         return super().dispatch(request, *args, **kwargs)
 
@@ -191,6 +202,12 @@ class UserDevices(AuthGateMixin, WebAuthnMixin, AjaxMessagesMixin, CustomiseMixi
         credential = self.register_credential(self.request.user)
         if not credential:
             return self.error_message(f'Could not add passkey<br>{self.last_error}')
+        if self.request.session.get('authentication_method') not in self.customisation_class.factor_management_methods:
+            # Only reachable for a user who had no factor (AuthGateMixin steps
+            # everyone else up first): their first passkey counts as 2FA, as it
+            # does on the login setup screen -- and the naming modal that
+            # follows would otherwise demand a step-up straight away.
+            self.request.session['authentication_method'] = '2fa'
         # Success feedback + a chance to name it, instead of silently closing.
         return self.command_response(ajax_modal_replace(self.request, 'auth:name_passkey',
                                                         slug=f'pk-{credential.pk}'))
@@ -464,7 +481,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         self.request.session.pop('totp_setup', None)
         FailedLoginAttempt.clear_failed_attempts(self.request, self.user, use_ip=False)
         CookieBackend.delete_part_login(self.request)
-        auth_login(self.request, self.user, backend='modal_2fa.auth.CookieBackend')
+        auth_login(self.request, self.user, backend=get_cookie_backend_path())
         self.request.session['authentication_method'] = '2fa'
         return self.success_response()
 
