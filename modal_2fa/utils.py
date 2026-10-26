@@ -1,6 +1,14 @@
 from django.conf import settings
-from django.utils.http import url_has_allowed_host_and_scheme
+from django.urls import reverse
+from django.utils.http import url_has_allowed_host_and_scheme, urlencode
 from django.utils.module_loading import import_string
+
+
+def two_factor_url(next_url=None):
+    """auth:auth_2fa, returning to ``next_url`` afterwards (validate it first if
+    it came from the client)."""
+    url = reverse('auth:auth_2fa')
+    return url + '?' + urlencode({'next': next_url}) if next_url else url
 
 
 def safe_redirect_url(request, url, fallback=None):

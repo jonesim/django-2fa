@@ -22,7 +22,7 @@ from django.http import HttpResponseRedirect
 from django.urls import Resolver404, path, resolve, reverse
 from django.utils.http import urlencode
 
-from .utils import get_custom_auth, safe_redirect_url
+from .utils import get_custom_auth, safe_redirect_url, two_factor_url
 
 # Paths under the admin prefix that must stay reachable without a second factor:
 # the shadow login/logout/password-reset routes themselves.
@@ -172,4 +172,4 @@ class Wagtail2FAMiddleware:
             return None
         # Not auth_2fa_url(): that reads `next` from request.GET, which here is
         # the Wagtail page's own query string rather than where to return to.
-        return HttpResponseRedirect(reverse('auth:auth_2fa') + '?' + urlencode({'next': request.get_full_path()}))
+        return HttpResponseRedirect(two_factor_url(request.get_full_path()))

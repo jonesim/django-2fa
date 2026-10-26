@@ -24,6 +24,10 @@ class CustomiseAuth(MicrosoftCustomiseMixin, WagtailCustomiseMixin):
       - ``user_2fa_optional(user) -> bool``       @staticmethod  — is 2FA optional for this user (default True)
       - ``two_factor_enabled(request) -> bool``  @staticmethod  — does 2FA apply to this request at all (default True)
       - ``password_login_allowed(user) -> bool``  @staticmethod  — may this user log in with a password (default True)
+      - ``allow_passkeys(user) -> bool``          @staticmethod  — may this user register and sign in with passkeys
+      - ``allow_totp(user) -> bool``              @staticmethod  — may this user enrol an authenticator app
+      - ``passkey_user_verification(user) -> str`` / ``passkey_resident_key(user) -> str``  @staticmethod
+        — WebAuthn requirements ('discouraged' / 'preferred' / 'required')
       - ``allowed_remember(user) -> bool``        @staticmethod  — show the "remember this device" option
       - ``max_cookies(user) -> int``            @staticmethod  — max trusted devices per user (default 2)
       - ``is_ip_excluded(ip) -> bool``          @classmethod   — exempt an IP/CIDR from the shared-IP lockout

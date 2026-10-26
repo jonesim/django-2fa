@@ -2,8 +2,7 @@
     {% if allow_passkeys or allow_totp %}
         <p>Protect your account with a second factor. Choose how you want to verify it's you when signing in:</p>
     {% else %}
-        <p>Your account requires two-factor authentication, but no method is available to you.
-            Please contact your administrator.</p>
+        <p>No two-factor method is available for your account. Please contact your administrator.</p>
     {% endif %}
     {% if allow_passkeys %}
         <p class="mb-1"><b>Passkey</b> (recommended) &mdash; use your fingerprint, face or device PIN.

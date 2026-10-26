@@ -9,7 +9,6 @@ from django.core.exceptions import PermissionDenied
 from django.db.models import ObjectDoesNotExist
 from django.http import HttpResponseRedirect
 from django.urls import reverse
-from django.utils.http import urlencode
 from django.utils.safestring import mark_safe
 from django.template.loader import render_to_string
 from django_modals.messages import AjaxMessagesMixin
@@ -22,10 +21,10 @@ from django_modals.modals import FormModal, Modal
 
 from .backends import CookieBackend, user_has_second_factor
 from .models import RememberDeviceCookie, FailedLoginAttempt, WebauthnCredential
-from .utils import get_client_ip_address, get_cookie_backend_path, get_custom_auth, safe_redirect_url
+from .utils import get_client_ip_address, get_cookie_backend_path, get_custom_auth, safe_redirect_url, two_factor_url
 from .forms import CrispyPasswordChangeForm, CrispyPasswordResetForm, CrispySetPasswordForm, CrispyLoginForm, Form2FA,\
     RememberCookieForm, PasskeyNameForm
-from .webauthn import WebAuthnMixin, web_authn_script, get_user_authenticators, user_may_use_passkeys
+from .webauthn import WebAuthnMixin, web_authn_script, get_user_authenticators
 from .microsoft import microsoft_configured
 
 UserModel = get_user_model()
@@ -76,18 +75,17 @@ class AuthGateMixin:
         if (request.session.get('authentication_method') not in self.customisation_class.factor_management_methods
                 and user_has_second_factor(request.user)):
             if not is_ajax(request):
-                return HttpResponseRedirect(reverse('auth:auth_2fa') + '?'
-                                            + urlencode({'next': request.get_full_path()}))
+                return HttpResponseRedirect(two_factor_url(request.get_full_path()))
+            # After the step-up the page reloads (no `next`): the modal they
+            # asked for is reopened from the menu.
             # noinspection PyUnresolvedReferences
-            return self.command_response('show_modal', modal=reverse('auth:auth_2fa'))
+            return self.command_response('show_modal', modal=two_factor_url())
         # noinspection PyUnresolvedReferences
         return super().dispatch(request, *args, **kwargs)
 
 
 def auth_2fa_url(request):
-    safe_next = safe_redirect_url(request, request.GET.get('next'))
-    query_string = '?' + urlencode({'next': safe_next}) if safe_next else ''
-    return reverse('auth:auth_2fa') + query_string
+    return two_factor_url(safe_redirect_url(request, request.GET.get('next')))
 
 
 class SuccessRedirectMixin:
@@ -213,9 +211,6 @@ class UserDevices(AuthGateMixin, WebAuthnMixin, AjaxMessagesMixin, CustomiseMixi
         RememberDeviceCookie.objects.filter(id=id, user=self.request.user).delete()
         return self.button_refresh_modal()
 
-    def passkeys_allowed(self):
-        return user_may_use_passkeys(self.request.user)
-
     def button_add_webauthn(self, **kwargs):
         if not self.passkeys_allowed():
             return self.command_response()
@@ -233,7 +228,7 @@ class UserDevices(AuthGateMixin, WebAuthnMixin, AjaxMessagesMixin, CustomiseMixi
             # everyone else up first): their first passkey counts as 2FA, as it
             # does on the login setup screen -- and the naming modal that
             # follows would otherwise demand a step-up straight away.
-            self.request.session['authentication_method'] = '2fa'
+            CookieBackend.mark_2fa(self.request)
         # Success feedback + a chance to name it, instead of silently closing.
         return self.command_response(ajax_modal_replace(self.request, 'auth:name_passkey',
                                                         slug=f'pk-{credential.pk}'))
@@ -369,7 +364,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         FailedLoginAttempt.clear_failed_attempts(self.request, self.user, use_ip=False)
         CookieBackend.delete_part_login(self.request)
         auth_login(self.request, self.user, backend=get_cookie_backend_path())
-        self.request.session['authentication_method'] = '2fa'
+        self.request.session['authentication_method'] = '2fa'   # auth_login just rotated the key
 
     @ajax_method
     def auth(self, **kwargs):
@@ -377,6 +372,11 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
             return self.error_message(self._locked)
         if not self.usable_passkeys():
             return self.command_response()
+        if 'auth_challenge' not in self.request.session:
+            # Consumed by an earlier success (double-submit, prompt + button):
+            # nothing can verify without it, so it isn't a guess -- don't count
+            # it toward the lockout.
+            return self.error_message('This passkey request has expired -- please try again')
         if self.check_authentication(self.user):
             self.complete_login()
             return self.success_response()
@@ -518,7 +518,10 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         self.request.session.pop('totp_setup', None)
         if not CookieBackend.get_part_login(self.request) and self.request.user.is_authenticated:
             # A signed-in user backing out of setup/step-up keeps their session;
-            # only a mid-login cancel abandons the login.
+            # only a mid-login cancel abandons the login. On a full page (a
+            # step-up redirect) there's no modal to close, so leave the page.
+            if self.request.POST.get('modal_type') == 'no-parent':
+                return self.command_response('redirect', url=settings.LOGIN_REDIRECT_URL)
             return self.command_response('close')
         CookieBackend.delete_part_login(self.request)
         auth_logout(self.request)
@@ -546,7 +549,9 @@ class Change2FA(AuthGateMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirec
     def dispatch(self, request, *args, **kwargs):
         # The menu hides this when allow_totp says no; refuse a direct request too.
         if request.user.is_authenticated and not self.customisation_class.allow_totp(request.user):
-            raise PermissionDenied
+            if not is_ajax(request):
+                raise PermissionDenied
+            return self.command_response('message', text='Authenticator apps are not available for your account.')
         return super().dispatch(request, *args, **kwargs)
 
     def button_cancel(self, **_kwargs):

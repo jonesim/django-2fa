@@ -1,10 +1,10 @@
 from ajax_helpers.utils import ajax_command
 from django.urls import reverse, NoReverseMatch
 from django_menus.menu import MenuItem, DividerItem
-from django_otp import user_has_device
 
+from .backends import user_has_totp
 from .utils import get_custom_auth
-from .webauthn import user_has_passkey
+from .webauthn import user_has_passkey, user_may_use_passkeys
 
 
 def user_display(user):
@@ -22,14 +22,15 @@ def add_auth_menu(view):
         # Gate on what the user actually has rather than how this session was
         # established -- a passkey-only user must still reach the management
         # entries (there is no TOTP step in their history to set a marker).
-        has_totp = user_has_device(view.request.user)
-        if has_totp or user_has_passkey(view.request.user):
+        user = view.request.user
+        has_totp = user_has_totp(user)
+        if has_totp or user_has_passkey(user):
             dropdown += [('auth:user_devices', 'Passkeys & trusted devices')]
-            if get_custom_auth().allow_totp(view.request.user):
+            if get_custom_auth().allow_totp(user):
                 dropdown += [('auth:change_2fa', 'Change authenticator app' if has_totp
                               else 'Set up authenticator app')]
             dropdown += [('auth:remove_2fa', 'Remove 2FA')]
-        else:
+        elif get_custom_auth().allow_totp(user) or user_may_use_passkeys(user):
             dropdown += [('auth:auth_2fa', 'Set up 2FA')]
 
         dropdown += [

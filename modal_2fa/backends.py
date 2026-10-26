@@ -1,6 +1,6 @@
 from django.contrib.auth.backends import ModelBackend
 from django.contrib.auth import get_user_model
-from django_otp import user_has_device
+from django_otp.plugins.otp_totp.models import TOTPDevice
 
 from .models import RememberDeviceCookie
 from .utils import get_custom_auth
@@ -9,12 +9,20 @@ from .webauthn import user_has_passkey, user_may_use_passkeys
 UserModel = get_user_model()
 
 
+def user_has_totp(user):
+    return TOTPDevice.objects.filter(user=user, confirmed=True).exists()
+
+
 def user_has_second_factor(user):
-    # A passkey is as much a second factor as an OTP device -- without this a
+    # Only what Modal2FA can verify. django_otp's user_has_device would also
+    # count the static/HOTP devices modal_2fa_apps installs, which nothing here
+    # checks -- such a user would be gated as having a factor, then offered
+    # setup, and could upgrade to '2fa' without ever proving it.
+    # A passkey is as much a second factor as TOTP -- without this a
     # passkey-only user would be logged in on the password alone when 2FA is
     # optional. Passkeys only count while allow_passkeys permits them: one the
     # user may no longer sign in with isn't a factor they can present.
-    return user_has_device(user) or (user_may_use_passkeys(user) and user_has_passkey(user))
+    return user_has_totp(user) or (user_may_use_passkeys(user) and user_has_passkey(user))
 
 
 class CookieBackend(ModelBackend):
@@ -24,6 +32,14 @@ class CookieBackend(ModelBackend):
     def __init__(self):
         super().__init__()
         self.customisation_class = get_custom_auth()
+
+    @staticmethod
+    def mark_2fa(request):
+        """Record that this session proved a second factor. The key is rotated,
+        as auth_login does, so a session id known before the upgrade doesn't
+        inherit the standing the admin and Wagtail gates accept."""
+        request.session.cycle_key()
+        request.session['authentication_method'] = '2fa'
 
     @staticmethod
     def get_part_login(request):
@@ -73,7 +89,7 @@ class CookieBackend(ModelBackend):
                 self.set_part_login(request, user.username)
         else:
             if device.verify_token(token):
-                request.session['authentication_method'] = '2fa'
+                self.mark_2fa(request)
                 if request.user.is_authenticated:
                     user = request.user
                 else:

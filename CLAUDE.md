@@ -57,7 +57,7 @@ Provides drop-in 2FA authentication for Django projects using `django-nested-mod
 
 1. `ModalLoginView` processes credentials via `CookieBackend.authenticate()`
 2. If user has a trusted cookie → login directly (`session['authentication_method'] = 'cookie'`)
-3. If user has **no second factor** (`user_has_second_factor` = confirmed TOTP device OR passkey for the current rp_id) and `user_2fa_optional()` returns `True` → login directly (`authentication_method = 'password'`; no gate accepts that value)
+3. If user has **no second factor** (`user_has_second_factor` = confirmed TOTP device OR passkey for the current rp_id while `allow_passkeys(user)` permits it) and `user_2fa_optional()` returns `True` → login directly (`authentication_method = 'password'`; no gate accepts that value)
 4. Otherwise → stores username in `session['part_login']` and redirects to `Modal2FA`
 5. `Modal2FA` resolves a **mode** (`Modal2FA.get_mode()`): `totp` (confirmed device — code field, plus auto-fired passkey prompt and a "Use passkey" button if they have one), `passkey_only` (passkey but no TOTP — prompt auto-fires, retry button, deliberately **no** TOTP enrolment offer mid-login), `totp_new` (QR enrolment, reached via the choice screen — `session['totp_setup']`), or `choice` (no factor at all — first-time setup screen offering "Set up a passkey" / "Use an authenticator app"; either alone completes login and sets `authentication_method = '2fa'`)
 6. Optionally redirects to `ConfirmCookieModal` to name and trust the device

@@ -24,11 +24,10 @@ from django.contrib.auth.backends import ModelBackend
 from django.db.models import ObjectDoesNotExist
 from django.http import HttpResponseRedirect
 from django.urls import reverse
-from django.utils.http import urlencode
 from django.views import View
 
 from .backends import CookieBackend
-from .utils import get_cookie_backend_path, get_custom_auth, safe_redirect_url
+from .utils import get_cookie_backend_path, get_custom_auth, safe_redirect_url, two_factor_url
 
 UserModel = get_user_model()
 
@@ -290,10 +289,7 @@ class MsCallbackView(MsAuthMixin, View):
 
         # MFA not proven by the token: fall through to the normal 2FA step.
         CookieBackend.set_part_login(request, user.username)
-        url = reverse('auth:auth_2fa')
-        if next_url:
-            url += '?' + urlencode({'next': next_url})
-        return HttpResponseRedirect(url)
+        return HttpResponseRedirect(two_factor_url(next_url))
 
 
 # --- url registration -------------------------------------------------------

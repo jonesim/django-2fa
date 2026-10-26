@@ -18,6 +18,7 @@ try:
 except ImportError:  # django-nested-modals < 0.1 has a flat modals module
     from django_modals.modals import ModalException
 from django_modals.processes import PROCESS_EDIT
+from django_otp.plugins.otp_static.models import StaticDevice
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
 from modal_2fa.backends import CookieBackend
@@ -82,6 +83,17 @@ class NoTotpCustomise(Mandatory2FACustomise):
 
 class NoFactorsCustomise(NoPasskeysCustomise):
     # 2FA mandatory but neither factor allowed -- 'examples.tests.NoFactorsCustomise'.
+    @staticmethod
+    def allow_totp(user):
+        return False
+
+
+class OptionalNoFactorsCustomise(CustomiseAuth):
+    # 2FA optional, neither factor allowed -- 'examples.tests.OptionalNoFactorsCustomise'.
+    @staticmethod
+    def allow_passkeys(user):
+        return False
+
     @staticmethod
     def allow_totp(user):
         return False
@@ -631,14 +643,15 @@ class PasskeyOnlyLoginTest(UserMixin, TestCase):
         assert '_auth_user_id' in self.client.session
         assert 'part_login' not in self.client.session
         # A double-submit / replay finds the challenge already consumed: a clean
-        # error, not a 500.
+        # error, not a 500 -- and not a failed attempt toward the lockout.
         with mock.patch('modal_2fa.webauthn.verify_authentication_response', return_value=verified), \
                 mock.patch('modal_2fa.webauthn.base64url_to_bytes', return_value=b''):
             response = self.client.post(reverse('auth:auth_2fa'),
                                         {'ajax_method': 'auth', 'data': json.dumps({'id': 'abc123'})},
                                         HTTP_X_REQUESTED_WITH='XMLHttpRequest')
         assert response.status_code == 200
-        assert 'Could not sign in with passkey' in response.content.decode()
+        assert 'expired' in response.content.decode()
+        assert not FailedLoginAttempt.objects.filter(failed_attempts__gt=0).exists()
 
     def test_malformed_assertion_fails_cleanly(self):
         self._passkey_user()
@@ -978,7 +991,7 @@ class FactorPolicyTest(UserMixin, TestCase):
         user = self.create_user()
         self.client.post(reverse('auth:login'), test_user)
         content = self.client.get(reverse('auth:auth_2fa')).content.decode()
-        assert 'no method is available' in content
+        assert 'No two-factor method is available' in content
         for offer in ('setup_passkey', 'setup_totp', 'id_code'):
             assert offer not in content
         assert not TOTPDevice.objects.filter(user=user).exists()
@@ -1016,6 +1029,77 @@ class FactorPolicyTest(UserMixin, TestCase):
         credential = user.webauthn.get()
         assert credential.name == 'x' * 60
         assert credential.transports == ''
+
+    @override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.NoTotpCustomise')
+    def test_change_2fa_refusal_is_a_command_over_ajax(self):
+        self.login_as(self.create_user(), method='password')
+        response = self.client.get(reverse('auth:change_2fa'), HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert response.json()[0]['function'] == 'message'
+
+    @override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.OptionalNoFactorsCustomise')
+    def test_menu_hides_setup_when_no_method_allowed(self):
+        self.login_as(self.create_user(), method='password')
+        assert reverse('auth:auth_2fa') not in self.client.get(reverse('basic')).content.decode()
+
+    def test_menu_offers_setup_by_default(self):
+        self.login_as(self.create_user(), method='password')
+        assert reverse('auth:auth_2fa') in self.client.get(reverse('basic')).content.decode()
+
+
+class SecondFactorScopeTest(UserMixin, TestCase):
+    """Only factors modal_2fa can verify (TOTP, allowed passkeys) count."""
+
+    def test_static_device_alone_is_not_a_factor(self):
+        # otp_static is installed by modal_2fa_apps, but Modal2FA can't check
+        # backup codes: such a user isn't treated as having a factor it would
+        # then never ask for.
+        user = self.create_user()
+        StaticDevice.objects.create(user=user, name='backup', confirmed=True)
+        self.client.post(reverse('auth:login'), test_user)
+        assert self.client.session['authentication_method'] == 'password'
+
+
+class SessionRotationTest(UserMixin, TestCase):
+    """Upgrading a session to '2fa' rotates its key, as a login does."""
+
+    def test_first_passkey_from_devices_rotates_key(self):
+        user = self.create_user()
+        self.login_as(user, method='password')
+        before = self.client.session.session_key
+        self.client.post(reverse('auth:user_devices'), data=json.dumps({'button': 'add_webauthn'}),
+                         content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        verified = mock.Mock(credential_public_key=b'pub', credential_id=b'cid', sign_count=0)
+        with mock.patch('modal_2fa.webauthn.verify_registration_response', return_value=verified):
+            self.client.post(reverse('auth:user_devices'),
+                             {'ajax_method': 'register', 'data': json.dumps({'response': {}})},
+                             HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert self.client.session['authentication_method'] == '2fa'
+        assert self.client.session.session_key != before
+
+    def test_change_2fa_enrolment_rotates_key(self):
+        user = self.create_user()
+        self.login_as(user, method='password')
+        self.client.get(reverse('auth:change_2fa'))
+        device = TOTPDevice.objects.get(user=user, confirmed=False)
+        for field, value in TEST_TOTP.items():
+            setattr(device, field, value)
+        device.t0 = int(time() - (30 * 3))
+        device.save()
+        before = self.client.session.session_key
+        self.client.post(reverse('auth:change_2fa'), {'code': '154567'})
+        assert self.client.session['authentication_method'] == '2fa'
+        assert self.client.session.session_key != before
+
+
+class StepUpCancelTest(UserMixin, TestCase):
+
+    def test_cancel_on_full_page_step_up_leaves_the_page(self):
+        self.login_as(self.create_TOTP_user(), method='cookie')
+        response = self.client.post(reverse('auth:auth_2fa'),
+                                    {'button': 'cancel', 'modal_type': 'no-parent'},
+                                    HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert {'function': 'redirect', 'url': settings.LOGIN_REDIRECT_URL} in response.json()
+        assert '_auth_user_id' in self.client.session
 
 
 class PasswordLoginAllowedHookTest(UserMixin, TestCase):
