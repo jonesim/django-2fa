@@ -24,10 +24,11 @@ def add_auth_menu(view):
         # entries (there is no TOTP step in their history to set a marker).
         has_totp = user_has_device(view.request.user)
         if has_totp or user_has_passkey(view.request.user):
-            dropdown += [('auth:user_devices', 'Passkeys & trusted devices'),
-                         ('auth:change_2fa', 'Change authenticator app' if has_totp
-                          else 'Set up authenticator app'),
-                         ('auth:remove_2fa', 'Remove 2FA')]
+            dropdown += [('auth:user_devices', 'Passkeys & trusted devices')]
+            if get_custom_auth().allow_totp(view.request.user):
+                dropdown += [('auth:change_2fa', 'Change authenticator app' if has_totp
+                              else 'Set up authenticator app')]
+            dropdown += [('auth:remove_2fa', 'Remove 2FA')]
         else:
             dropdown += [('auth:auth_2fa', 'Set up 2FA')]
 

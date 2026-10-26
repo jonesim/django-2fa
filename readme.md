@@ -242,7 +242,9 @@ Point `AUTHENTICATION_CUSTOMISATION` at a subclass of `CustomiseAuth`:
 
 Common hooks: `user_2fa_optional`, `password_login_allowed`, `allow_passkeys` /
 `allow_totp` (which second factors are offered — disable one and the setup screen
-offers only the other), `passkey_user_verification` / `passkey_resident_key`
+offers only the other; disallowing passkeys also stops a user's existing passkeys
+signing them in, while an existing authenticator app keeps working),
+`passkey_user_verification` / `passkey_resident_key`
 (both default `'discouraged'` so hardware keys such as YubiKeys stay touch-only —
 stronger values make browsers demand or force a PIN on the key; raise them only
 for a future passwordless flow), `allowed_remember`, `max_cookies`,

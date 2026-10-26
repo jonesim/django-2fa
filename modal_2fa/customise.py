@@ -159,9 +159,11 @@ class CustomiseAuth(MicrosoftCustomiseMixin, WagtailCustomiseMixin):
         """Whether ``user`` may register and use passkeys (default True).
 
         Return False to hide the passkey option from the 2FA setup screen and
-        the "Add passkey" button from Passkeys & trusted devices. The option is
-        also disabled automatically when the ``webauthn`` package isn't
-        installed.
+        the "Add passkey" button from Passkeys & trusted devices, and to stop
+        the user's existing passkeys counting as a second factor: they can't
+        sign in with them, and are offered setup (authenticator app, if
+        allowed) instead. The option is also disabled automatically when the
+        ``webauthn`` package isn't installed.
         """
         return True
 
@@ -198,7 +200,9 @@ class CustomiseAuth(MicrosoftCustomiseMixin, WagtailCustomiseMixin):
         """Whether ``user`` may enrol an authenticator app (default True).
 
         Return False to remove the authenticator-app option from the 2FA setup
-        screen, leaving passkeys as the only second factor on offer.
+        screen and the "Change / Set up authenticator app" menu entry, leaving
+        passkeys as the only second factor on offer. An app the user already
+        enrolled keeps working for sign-in.
         """
         return True
 

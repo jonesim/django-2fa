@@ -59,6 +59,41 @@ class DiscoverablePasskeyCustomise(Mandatory2FACustomise):
         return 'preferred'
 
 
+class NoPasskeysCustomise(Mandatory2FACustomise):
+    # 'examples.tests.NoPasskeysCustomise'
+    @staticmethod
+    def allow_passkeys(user):
+        return False
+
+
+class OptionalNoPasskeysCustomise(CustomiseAuth):
+    # 2FA optional and passkeys off -- 'examples.tests.OptionalNoPasskeysCustomise'.
+    @staticmethod
+    def allow_passkeys(user):
+        return False
+
+
+class NoTotpCustomise(Mandatory2FACustomise):
+    # 'examples.tests.NoTotpCustomise'
+    @staticmethod
+    def allow_totp(user):
+        return False
+
+
+class NoFactorsCustomise(NoPasskeysCustomise):
+    # 2FA mandatory but neither factor allowed -- 'examples.tests.NoFactorsCustomise'.
+    @staticmethod
+    def allow_totp(user):
+        return False
+
+
+class UVRequiredCustomise(CustomiseAuth):
+    # 'examples.tests.UVRequiredCustomise'
+    @staticmethod
+    def passkey_user_verification(user):
+        return 'required'
+
+
 class ExcludedIPCustomise(CustomiseAuth):
     # CIDR covering the test client's 127.0.0.1 -- referenced by override_settings
     # as 'examples.tests.ExcludedIPCustomise'.
@@ -881,6 +916,106 @@ class FactorManagementStepUpTest(UserMixin, TestCase):
         self.client.post(reverse('auth:auth_2fa'), {'code': '154567'})
         assert self.client.session['authentication_method'] == '2fa'
         assert self.client.get(reverse('auth:change_2fa')).status_code == 200
+
+
+class FactorPolicyTest(UserMixin, TestCase):
+    """allow_passkeys / allow_totp / passkey_user_verification are enforced on the server."""
+
+    verified_registration = mock.Mock(credential_public_key=b'pub', credential_id=b'cid', sign_count=0)
+
+    def _passkey_user(self):
+        user = self.create_user()
+        WebauthnCredential.objects.create(user=user, rp_id='localhost', credential_public_key='AAAA',
+                                          credential_id='abc123', sign_count=0)
+        return user
+
+    def _ajax(self, url_name, data):
+        return self.client.post(reverse(url_name), data=json.dumps(data),
+                                content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+
+    def _register(self, url_name, **post):
+        with mock.patch('modal_2fa.webauthn.verify_registration_response',
+                        return_value=self.verified_registration) as verify:
+            response = self.client.post(reverse(url_name), {'ajax_method': 'register', **post},
+                                        HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        return response, verify
+
+    def _assert_passkey(self):
+        with mock.patch('modal_2fa.webauthn.verify_authentication_response',
+                        return_value=mock.Mock(new_sign_count=1)) as verify, \
+                mock.patch('modal_2fa.webauthn.base64url_to_bytes', return_value=b''):
+            self.client.post(reverse('auth:auth_2fa'), {'ajax_method': 'auth', 'data': json.dumps({'id': 'abc123'})},
+                             HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        return verify
+
+    @override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.NoPasskeysCustomise')
+    def test_disallowed_user_cannot_register_from_devices(self):
+        user = self.create_user()
+        self.login_as(user, method='password')
+        assert self._ajax('auth:user_devices', {'button': 'add_webauthn'}).json() == []
+        self._register('auth:user_devices', data=json.dumps({'response': {}}))
+        assert not user.webauthn.exists()
+
+    @override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.NoPasskeysCustomise')
+    def test_disallowed_passkey_does_not_sign_in(self):
+        self._passkey_user()
+        self.client.post(reverse('auth:login'), test_user)
+        content = self.client.get(reverse('auth:auth_2fa')).content.decode()
+        assert '"authenticate"' not in content         # no prompt for the disallowed passkey
+        assert 'id_code' in content                    # authenticator-app setup instead
+        verify = self._assert_passkey()
+        verify.assert_not_called()
+        assert '_auth_user_id' not in self.client.session
+
+    @override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.OptionalNoPasskeysCustomise')
+    def test_disallowed_passkey_is_not_a_factor(self):
+        self._passkey_user()
+        self.client.post(reverse('auth:login'), test_user)
+        assert self.client.session['authentication_method'] == 'password'
+
+    @override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.NoFactorsCustomise')
+    def test_neither_factor_allowed_offers_nothing(self):
+        user = self.create_user()
+        self.client.post(reverse('auth:login'), test_user)
+        content = self.client.get(reverse('auth:auth_2fa')).content.decode()
+        assert 'no method is available' in content
+        for offer in ('setup_passkey', 'setup_totp', 'id_code'):
+            assert offer not in content
+        assert not TOTPDevice.objects.filter(user=user).exists()
+
+    @override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.NoTotpCustomise')
+    def test_change_2fa_refused_when_totp_disallowed(self):
+        self.login_as(self.create_user(), method='password')
+        assert self.client.get(reverse('auth:change_2fa')).status_code == 403
+        assert not TOTPDevice.objects.exists()
+
+    @override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.UVRequiredCustomise')
+    def test_required_user_verification_enforced_by_server(self):
+        user = self._passkey_user()
+        self.client.post(reverse('auth:login'), test_user)
+        self.client.get(reverse('auth:auth_2fa'))
+        assert self._assert_passkey().call_args.kwargs['require_user_verification'] is True
+        self.login_as(user)
+        self._ajax('auth:user_devices', {'button': 'add_webauthn'})
+        _, verify = self._register('auth:user_devices', data=json.dumps({'response': {}}))
+        assert verify.call_args.kwargs['require_user_verification'] is True
+
+    def test_user_verification_not_required_by_default(self):
+        self._passkey_user()
+        self.client.post(reverse('auth:login'), test_user)
+        self.client.get(reverse('auth:auth_2fa'))
+        assert self._assert_passkey().call_args.kwargs['require_user_verification'] is False
+
+    def test_registration_sanitises_client_fields(self):
+        user = self.create_user()
+        self.login_as(user, method='password')
+        self._ajax('auth:user_devices', {'button': 'add_webauthn'})
+        response, _ = self._register('auth:user_devices', name='x' * 100,
+                                     data=json.dumps({'response': {'transports': None}}))
+        assert response.status_code == 200
+        credential = user.webauthn.get()
+        assert credential.name == 'x' * 60
+        assert credential.transports == ''
 
 
 class PasswordLoginAllowedHookTest(UserMixin, TestCase):

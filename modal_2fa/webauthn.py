@@ -20,7 +20,8 @@ def web_authn_script():
 try:
     from webauthn import (generate_registration_options, options_to_json, verify_registration_response,
                           base64url_to_bytes, generate_authentication_options, verify_authentication_response)
-    from webauthn.helpers.exceptions import InvalidRegistrationResponse, InvalidAuthenticationResponse
+    from webauthn.helpers.exceptions import (InvalidRegistrationResponse, InvalidAuthenticationResponse,
+                                             InvalidJSONStructure)
     from webauthn.helpers.structs import (PublicKeyCredentialDescriptor, UserVerificationRequirement,
                                           AuthenticatorSelectionCriteria, ResidentKeyRequirement,
                                           AuthenticatorTransport)
@@ -45,6 +46,20 @@ def user_has_passkey(user):
     return get_user_authenticators(user).exists()
 
 
+def user_may_use_passkeys(user):
+    from modal_2fa.utils import get_custom_auth
+    return not not_installed and get_custom_auth().allow_passkeys(user)
+
+
+def credential_transports(response):
+    # Client-supplied: keep only strings, so a null or odd-shaped list stores
+    # nothing rather than raising.
+    transports = (response.get('response') or {}).get('transports')
+    if not isinstance(transports, list):
+        return ''
+    return ','.join(t for t in transports if isinstance(t, str))[:120]
+
+
 def credential_descriptor(credential):
     transports = [AuthenticatorTransport(t) for t in credential.transport_list()
                   if t in AuthenticatorTransport._value2member_map_]
@@ -65,6 +80,16 @@ class WebAuthnMixin:
     def user_verification(self):
         from modal_2fa.utils import get_custom_auth
         return UserVerificationRequirement(get_custom_auth().passkey_user_verification(self.get_webauthn_user()))
+
+    @staticmethod
+    def user_verification_required(user):
+        # The options only ask the browser; this makes the server insist on the
+        # UV flag too when the hook says 'required'.
+        from modal_2fa.utils import get_custom_auth
+        return get_custom_auth().passkey_user_verification(user) == 'required'
+
+    def passkeys_allowed(self):
+        return user_may_use_passkeys(self.get_webauthn_user())
 
     def authentication_command(self, authenticators):
         if not_installed:
@@ -118,6 +143,7 @@ class WebAuthnMixin:
                 expected_challenge=self.get_challenge('reg_challenge'),
                 expected_origin=self.get_origin(),
                 expected_rp_id=self.rp_id,
+                require_user_verification=self.user_verification_required(user),
             )
             credential = WebauthnCredential.objects.create(
                 user=user,
@@ -125,10 +151,11 @@ class WebAuthnMixin:
                 credential_public_key=bytes_to_base64url(authentication_verification.credential_public_key),
                 credential_id=bytes_to_base64url(authentication_verification.credential_id),
                 sign_count=authentication_verification.sign_count,
-                name=self.request.POST.get('name', '') or self.default_credential_name(user, response),
-                transports=','.join(response.get('response', {}).get('transports', []))[:120],
+                name=(self.request.POST.get('name', '').strip()[:60]
+                      or self.default_credential_name(user, response)),
+                transports=credential_transports(response),
             )
-        except (InvalidRegistrationResponse, KeyError, ValueError) as error:
+        except (InvalidRegistrationResponse, InvalidJSONStructure, KeyError, ValueError) as error:
             self.last_error = error
             return None
         self.request.session.pop('reg_challenge', None)
@@ -172,11 +199,12 @@ class WebAuthnMixin:
                 # authenticator doesn't support counters both sides stay 0 and the check
                 # is skipped, as before.
                 credential_current_sign_count=credentials.sign_count,
+                require_user_verification=self.user_verification_required(user),
             )
             credentials.sign_count = authentication_verification.new_sign_count
             credentials.last_used_on = timezone.now()
             credentials.save()
-        except (InvalidAuthenticationResponse, KeyError, ValueError, TypeError) as error:
+        except (InvalidAuthenticationResponse, InvalidJSONStructure, KeyError, ValueError, TypeError) as error:
             # KeyError covers a missing auth_challenge: it's popped on success, so
             # a double-submitted or replayed assertion lands here, not in a 500.
             # ValueError/TypeError cover a missing or malformed 'data' body.

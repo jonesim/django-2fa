@@ -76,7 +76,8 @@ AUTHENTICATION_CUSTOMISATION = 'myapp.auth.MyCustomise'
 Key hooks to override:
 
 - `user_2fa_optional(user)` — whether 2FA is enforced for a given user (default: `True`)
-- `allow_passkeys(user)` / `allow_totp(user)` — which second factors are offered on the setup choice screen and in the devices modal (default: both `True`; passkeys also auto-disable if the `webauthn` package is missing)
+- `allow_passkeys(user)` / `allow_totp(user)` — which second factors are offered on the setup choice screen and in the devices modal (default: both `True`; passkeys also auto-disable if the `webauthn` package is missing). Enforced server-side, not just hidden. A disallowed user's existing passkeys stop counting as a factor (`user_has_second_factor` and `Modal2FA` both ignore them), whereas an already-enrolled authenticator app keeps working when `allow_totp` is False (only enrolling or changing one is refused). With 2FA mandatory and neither allowed, the choice screen says no method is available
+- `passkey_user_verification(user)` = `'required'` is enforced on the server too (`require_user_verification` on both `verify_*_response` calls), not just requested from the browser
 - `password_login_allowed(user)` — whether a user may log in with a password (default: `True`); return `False` to make a user **Entra-only** (password rejected at the backend, must use "Sign in with Microsoft")
 - `allowed_remember(user)` — whether the "remember this device" option is shown
 - `max_cookies(user)` — max trusted devices per user (default: 2)

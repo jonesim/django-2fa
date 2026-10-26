@@ -4,7 +4,7 @@ from django_otp import user_has_device
 
 from .models import RememberDeviceCookie
 from .utils import get_custom_auth
-from .webauthn import user_has_passkey
+from .webauthn import user_has_passkey, user_may_use_passkeys
 
 UserModel = get_user_model()
 
@@ -12,8 +12,9 @@ UserModel = get_user_model()
 def user_has_second_factor(user):
     # A passkey is as much a second factor as an OTP device -- without this a
     # passkey-only user would be logged in on the password alone when 2FA is
-    # optional.
-    return user_has_device(user) or user_has_passkey(user)
+    # optional. Passkeys only count while allow_passkeys permits them: one the
+    # user may no longer sign in with isn't a factor they can present.
+    return user_has_device(user) or (user_may_use_passkeys(user) and user_has_passkey(user))
 
 
 class CookieBackend(ModelBackend):

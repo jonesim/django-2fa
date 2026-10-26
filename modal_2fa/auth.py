@@ -5,6 +5,7 @@ from django.core.handlers.wsgi import WSGIRequest
 from django.contrib.auth import login as auth_login, logout as auth_logout
 from django.contrib.auth import get_user_model, authenticate
 from django.contrib.auth.views import PasswordResetConfirmView, LoginView, PasswordResetView, PasswordChangeView
+from django.core.exceptions import PermissionDenied
 from django.db.models import ObjectDoesNotExist
 from django.http import HttpResponseRedirect
 from django.urls import reverse
@@ -24,8 +25,7 @@ from .models import RememberDeviceCookie, FailedLoginAttempt, WebauthnCredential
 from .utils import get_client_ip_address, get_cookie_backend_path, get_custom_auth, safe_redirect_url
 from .forms import CrispyPasswordChangeForm, CrispyPasswordResetForm, CrispySetPasswordForm, CrispyLoginForm, Form2FA,\
     RememberCookieForm, PasskeyNameForm
-from .webauthn import WebAuthnMixin, web_authn_script, get_user_authenticators
-from . import webauthn
+from .webauthn import WebAuthnMixin, web_authn_script, get_user_authenticators, user_may_use_passkeys
 from .microsoft import microsoft_configured
 
 UserModel = get_user_model()
@@ -36,6 +36,28 @@ class CustomiseMixin:
         super().__init__()
         self.customisation_class = get_custom_auth()(self)
         self.customisation_class.customise_view(self)
+
+
+def login_redirect(view):
+    if not is_ajax(view.request):
+        return HttpResponseRedirect(reverse('auth:login'))
+    return view.command_response('redirect', url=reverse('auth:login'))
+
+
+def pending_totp_device(request, user):
+    """The unconfirmed TOTPDevice behind an enrolment QR code: a fresh secret
+    per GET, while a POST verifies against the QR that was shown. If the row
+    vanished (another tab), a new secret means the code simply fails rather
+    than a crash."""
+    if request.method == 'POST':
+        device = TOTPDevice.objects.filter(user=user, confirmed=False).first()
+        if device:
+            return device
+    else:
+        TOTPDevice.objects.filter(user=user, confirmed=False).delete()
+    device = TOTPDevice(user=user, confirmed=False)
+    device.save()
+    return device
 
 
 class AuthGateMixin:
@@ -49,10 +71,7 @@ class AuthGateMixin:
 
     def dispatch(self, request, *args, **kwargs):
         if not request.user.is_authenticated:
-            if not is_ajax(request):
-                return HttpResponseRedirect(reverse('auth:login'))
-            # noinspection PyUnresolvedReferences
-            return self.command_response('redirect', url=reverse('auth:login'))
+            return login_redirect(self)
         # noinspection PyUnresolvedReferences
         if (request.session.get('authentication_method') not in self.customisation_class.factor_management_methods
                 and user_has_second_factor(request.user)):
@@ -194,11 +213,18 @@ class UserDevices(AuthGateMixin, WebAuthnMixin, AjaxMessagesMixin, CustomiseMixi
         RememberDeviceCookie.objects.filter(id=id, user=self.request.user).delete()
         return self.button_refresh_modal()
 
+    def passkeys_allowed(self):
+        return user_may_use_passkeys(self.request.user)
+
     def button_add_webauthn(self, **kwargs):
+        if not self.passkeys_allowed():
+            return self.command_response()
         return self.command_response(self.registration_command(self.request.user))
 
     @ajax_method
     def register(self, **_kwargs):
+        if not self.passkeys_allowed():
+            return self.command_response()
         credential = self.register_credential(self.request.user)
         if not credential:
             return self.error_message(f'Could not add passkey<br>{self.last_error}')
@@ -234,7 +260,7 @@ class UserDevices(AuthGateMixin, WebAuthnMixin, AjaxMessagesMixin, CustomiseMixi
 
     def get_modal_buttons(self):
         buttons = []
-        if not webauthn.not_installed and self.customisation_class.allow_passkeys(self.request.user):
+        if self.passkeys_allowed():
             buttons.append(modal_button_method('Add passkey', 'add_webauthn', 'btn btn-success',
                                                font_awesome='fas fa-key'))
         buttons.append(modal_button('Close', 'close', 'btn-secondary', font_awesome='fas fa-times'))
@@ -308,6 +334,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         self.user = None
         self._locked = False
         self._mode = None
+        self._passkeys = None
 
     def dispatch(self, request, *args, **kwargs):
         if CookieBackend.get_part_login(request):
@@ -318,14 +345,14 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
             try:
                 self.user = CookieBackend.get_part_login_user(request)
             except ObjectDoesNotExist:
-                return self._login_redirect()
+                return login_redirect(self)
             if request.user.is_authenticated and request.user.pk != self.user.pk:
                 auth_logout(request)
                 CookieBackend.set_part_login(request, self.user.get_username())
         elif self.request.user.is_authenticated:
             self.user = self.request.user
         else:
-            return self._login_redirect()
+            return login_redirect(self)
         # Throttle the second factor: a correct password alone must not buy an
         # unlimited number of TOTP/WebAuthn guesses (a 6-digit code is otherwise
         # brute-forceable). Scoped to the user (use_ip=False), not the shared IP,
@@ -335,20 +362,23 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
             self._locked = check_login
         return super().dispatch(request, *args, **kwargs)
 
-    def _login_redirect(self):
-        if not is_ajax(self.request):
-            return HttpResponseRedirect(reverse('auth:login'))
-        return self.command_response('redirect', url=reverse('auth:login'))
+    def complete_login(self):
+        """Every way of passing this modal ends here: one place records the
+        registered backend path and the '2fa' marker."""
+        self.request.session.pop('totp_setup', None)
+        FailedLoginAttempt.clear_failed_attempts(self.request, self.user, use_ip=False)
+        CookieBackend.delete_part_login(self.request)
+        auth_login(self.request, self.user, backend=get_cookie_backend_path())
+        self.request.session['authentication_method'] = '2fa'
 
     @ajax_method
     def auth(self, **kwargs):
         if self._locked:
             return self.error_message(self._locked)
+        if not self.usable_passkeys():
+            return self.command_response()
         if self.check_authentication(self.user):
-            FailedLoginAttempt.clear_failed_attempts(self.request, self.user, use_ip=False)
-            CookieBackend.delete_part_login(self.request)
-            auth_login(self.request, self.user, backend=get_cookie_backend_path())
-            self.request.session['authentication_method'] = '2fa'
+            self.complete_login()
             return self.success_response()
         # A failed WebAuthn assertion is a second-factor guess like a wrong TOTP
         # code: count it against the user (use_ip=False) so it shares the 2FA
@@ -356,11 +386,16 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         FailedLoginAttempt.add_failed_attempt(self.request, self.user, use_ip=False)
         return self.error_message(f'Could not sign in with passkey<br>{self.last_error}')
 
-    def passkeys_allowed(self):
-        return not webauthn.not_installed and self.customisation_class.allow_passkeys(self.user)
-
     def totp_allowed(self):
         return self.customisation_class.allow_totp(self.user)
+
+    def usable_passkeys(self):
+        # Fetched once per request (mode, form and auto-prompt all need it).
+        # Passkeys stop counting when allow_passkeys says no, matching
+        # user_has_second_factor.
+        if self._passkeys is None:
+            self._passkeys = list(get_user_authenticators(self.user)) if self.passkeys_allowed() else []
+        return self._passkeys
 
     def get_mode(self):
         if self._mode is None:
@@ -368,39 +403,31 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
                 self._mode = 'locked'
             elif TOTPDevice.objects.filter(user=self.user, confirmed=True).exists():
                 self._mode = 'totp'
-            elif get_user_authenticators(self.user).exists():
+            elif self.usable_passkeys():
                 # An existing passkey alone satisfies the second factor. TOTP
                 # enrolment is deliberately NOT offered here: a password-only
                 # attacker must not be able to add their own factor to an
                 # account that already has one.
                 self._mode = 'passkey_only'
-            elif (self.request.session.get('totp_setup')
-                  or (self.request.method == 'POST'
-                      and TOTPDevice.objects.filter(user=self.user, confirmed=False).exists())):
+            elif self.totp_allowed() and (
+                    self.request.session.get('totp_setup')
+                    or (self.request.method == 'POST'
+                        and TOTPDevice.objects.filter(user=self.user, confirmed=False).exists())):
                 # The POST clause keeps a user who was mid-QR-scan when this
                 # code deployed (unconfirmed device, no session flag) working.
                 self._mode = 'totp_new'
-            elif not self.passkeys_allowed():
+            elif self.totp_allowed() and not self.passkeys_allowed():
                 self._mode = 'totp_new'
             else:
+                # Also reached with neither factor allowed: the choice screen
+                # then offers nothing and says so.
                 self._mode = 'choice'
         return self._mode
 
     def get_device(self):
         if self.get_mode() == 'totp':
             return TOTPDevice.objects.filter(user=self.user, confirmed=True).first()
-        # totp_new: a fresh secret/QR per GET; a POST verifies against the QR
-        # that was shown. If the unconfirmed row vanished (another tab), a new
-        # secret means the code simply fails rather than a crash.
-        if self.request.method == 'POST':
-            device = TOTPDevice.objects.filter(user=self.user, confirmed=False).first()
-            if device:
-                return device
-        else:
-            TOTPDevice.objects.filter(user=self.user, confirmed=False).delete()
-        device = TOTPDevice(user=self.user, confirmed=False)
-        device.save()
-        return device
+        return pending_totp_device(self.request, self.user)
 
     @staticmethod
     def allowed_remember(_user):
@@ -415,7 +442,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         if mode in ('totp', 'totp_new'):
             kwargs['device'] = self.get_device()
         if mode == 'totp':
-            kwargs['has_passkey'] = get_user_authenticators(self.user).exists()
+            kwargs['has_passkey'] = bool(self.usable_passkeys())
         elif mode == 'totp_new':
             kwargs['back_button'] = bool(self.request.session.get('totp_setup')) and self.passkeys_allowed()
         elif mode == 'choice':
@@ -426,18 +453,16 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
     def get(self, request, *args, **kwargs):
         # Fire the browser's passkey prompt on load only when verifying an
         # existing passkey -- never over the setup screens.
-        if self.get_mode() in ('totp', 'passkey_only'):
-            authenticators = get_user_authenticators(self.user)
-            if authenticators:
-                command = self.authentication_command(authenticators)
-                if command:
-                    self.page_commands.append(command)
+        if self.get_mode() in ('totp', 'passkey_only') and self.usable_passkeys():
+            command = self.authentication_command(self.usable_passkeys())
+            if command:
+                self.page_commands.append(command)
         return super().get(request, *args, **kwargs)
 
     def button_use_passkey(self, **_kwargs):
         if self._locked:
             return self.error_message(self._locked)
-        authenticators = get_user_authenticators(self.user)
+        authenticators = self.usable_passkeys()
         if not authenticators:
             return self.command_response()
         return self.command_response(self.authentication_command(authenticators))
@@ -478,11 +503,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         # First factor of any kind: registering it completes the login. The
         # default name stands; it can be renamed under Passkeys & trusted
         # devices later.
-        self.request.session.pop('totp_setup', None)
-        FailedLoginAttempt.clear_failed_attempts(self.request, self.user, use_ip=False)
-        CookieBackend.delete_part_login(self.request)
-        auth_login(self.request, self.user, backend=get_cookie_backend_path())
-        self.request.session['authentication_method'] = '2fa'
+        self.complete_login()
         return self.success_response()
 
     def form_invalid(self, form):
@@ -505,9 +526,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         return self.command_response('show_modal', modal=reverse('auth:login'))
 
     def form_valid(self, form):
-        self.request.session.pop('totp_setup', None)
-        FailedLoginAttempt.clear_failed_attempts(self.request, self.user, use_ip=False)
-        auth_login(self.request, self.user, backend=get_cookie_backend_path())
+        self.complete_login()
         if form.cleaned_data.get('remember'):
             return self.command_response(ajax_modal_replace(self.request, 'auth:confirm_remember',
                                                             modal_type=self.request.POST.get('modal_type')))
@@ -524,6 +543,12 @@ class Change2FA(AuthGateMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirec
     form_class = Form2FA
     modal_title = 'Change authenticator app'
 
+    def dispatch(self, request, *args, **kwargs):
+        # The menu hides this when allow_totp says no; refuse a direct request too.
+        if request.user.is_authenticated and not self.customisation_class.allow_totp(request.user):
+            raise PermissionDenied
+        return super().dispatch(request, *args, **kwargs)
+
     def button_cancel(self, **_kwargs):
         return self.command_response('close')
 
@@ -531,21 +556,11 @@ class Change2FA(AuthGateMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirec
         TOTPDevice.objects.filter(user=self.request.user, confirmed=True).exclude(id=form.device.id).delete()
         return self.command_response('close')
 
-    def get_device(self):
-        if self.request.method == 'POST':
-            device = TOTPDevice.objects.filter(user=self.request.user, confirmed=False).first()
-            if device:
-                return device
-        else:
-            TOTPDevice.objects.filter(user=self.request.user, confirmed=False).delete()
-        device = TOTPDevice(user=self.request.user, confirmed=False)
-        device.save()
-        return device
-
     def get_form_kwargs(self):
         if not TOTPDevice.objects.filter(user=self.request.user, confirmed=True).exists():
             self.modal_title = 'Set up authenticator app'
-        return dict(**super().get_form_kwargs(), request=self.request, device=self.get_device(),
+        return dict(**super().get_form_kwargs(), request=self.request,
+                    device=pending_totp_device(self.request, self.request.user),
                     mode='totp_new', allowed_remember=False)
 
 
