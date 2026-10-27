@@ -19,8 +19,10 @@ from django_modals.helper import modal_button_method, modal_button, ajax_modal_r
 
 from django_modals.modals import FormModal, Modal
 
-from .backends import CookieBackend, user_has_second_factor
+from .backends import CookieBackend, user_has_second_factor, user_has_totp
 from .models import RememberDeviceCookie, FailedLoginAttempt, WebauthnCredential
+from .notify import (notify_security_change, PASSKEY_ADDED, PASSKEY_REMOVED, TOTP_ENROLLED, TOTP_CHANGED,
+                     TRUSTED_DEVICE_ADDED, TRUSTED_DEVICE_REMOVED, TWO_FACTOR_REMOVED, PASSWORD_CHANGED)
 from .utils import get_client_ip_address, get_cookie_backend_path, get_custom_auth, safe_redirect_url, two_factor_url
 from .forms import CrispyPasswordChangeForm, CrispyPasswordResetForm, CrispySetPasswordForm, CrispyLoginForm, Form2FA,\
     RememberCookieForm, PasskeyNameForm
@@ -41,6 +43,39 @@ def login_redirect(view):
     if not is_ajax(view.request):
         return HttpResponseRedirect(reverse('auth:login'))
     return view.command_response('redirect', url=reverse('auth:login'))
+
+
+def remove_second_factors(user):
+    """Revert ``user`` to password-only: every TOTP device (confirmed or not),
+    every passkey (all rp_ids -- there is no UI to manage one registered for
+    another deployment, so it mustn't be left orphaned) and every trusted
+    device. Used by the user's own "Remove 2FA" and the administrator reset."""
+    TOTPDevice.objects.filter(user=user).delete()
+    WebauthnCredential.objects.filter(user=user).delete()
+    RememberDeviceCookie.objects.filter(user=user).delete()
+
+
+def describe_second_factors(user):
+    """Human-readable list of what remove_second_factors(user) would delete."""
+    removals = []
+    if user_has_totp(user):
+        removals.append('your authenticator app')
+    passkeys = WebauthnCredential.objects.filter(user=user).count()
+    if passkeys:
+        removals.append(f'{passkeys} passkey{"s" if passkeys > 1 else ""}')
+    cookies = RememberDeviceCookie.objects.filter(user=user).count()
+    if cookies:
+        removals.append(f'{cookies} trusted device{"s" if cookies > 1 else ""}')
+    return removals
+
+
+def remove_trusted_device(request, id):
+    # Filter on the user as well as the id: ids are client-supplied and must
+    # never delete another user's row.
+    cookie = RememberDeviceCookie.objects.filter(id=id, user=request.user).first()
+    if cookie:
+        cookie.delete()
+        notify_security_change(request, request.user, TRUSTED_DEVICE_REMOVED, name=cookie.name)
 
 
 def pending_totp_device(request, user):
@@ -117,8 +152,20 @@ class ResetPasswordModal(CustomiseMixin, FormModal, PasswordResetView):
     form_class = CrispyPasswordResetForm
     modal_title = 'Reset Password'
     success_url = '/'
+    # Generic on purpose: it must not reveal whether the email matched a user.
+    throttled_message = 'Too many attempts. Please try again later.'
 
     def form_valid(self, form):
+        # Every request sends an email, so unthrottled this is a spam and
+        # enumeration vector. Requests count toward the same lockout as failed
+        # logins -- against the IP, and against the account the email names (if
+        # any) -- and the response is identical either way.
+        email_field = UserModel.get_email_field_name()
+        user = UserModel._default_manager.filter(**{f'{email_field}__iexact': form.cleaned_data['email']}).first()
+        if FailedLoginAttempt.check_request(self.request, user) is not True:
+            form.add_error(None, self.throttled_message)
+            return self.form_invalid(form)
+        FailedLoginAttempt.add_failed_attempt(self.request, user)
         """
         from django.contrib.auth.models import User
         from django.contrib.auth.tokens import default_token_generator
@@ -140,6 +187,7 @@ class ResetPasswordModal(CustomiseMixin, FormModal, PasswordResetView):
 class ModalPasswordResetView(CustomiseMixin, SuccessRedirectMixin, FormModal, PasswordResetConfirmView):
     form_class = CrispySetPasswordForm
     modal_title = 'Reset Password'
+    notify_password_changed = True   # off for the invite, which sets the first password
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(message='Invalid/Expired Link', **kwargs)
@@ -147,6 +195,8 @@ class ModalPasswordResetView(CustomiseMixin, SuccessRedirectMixin, FormModal, Pa
 
     def form_valid(self, form):
         form.save()
+        if self.notify_password_changed:
+            notify_security_change(self.request, form.user, PASSWORD_CHANGED)
         user_cache = authenticate(self.request, username=form.user.username,
                                   password=form.cleaned_data['new_password1'])
         if user_cache is None:
@@ -158,6 +208,7 @@ class ModalPasswordResetView(CustomiseMixin, SuccessRedirectMixin, FormModal, Pa
 class UserInvite(ModalPasswordResetView):
     form_class = CrispySetPasswordForm
     modal_title = 'Set Password'
+    notify_password_changed = False
 
     @property
     def extra_context(self):
@@ -176,6 +227,7 @@ class ConfirmCookieModal(AuthGateMixin, CustomiseMixin, SuccessRedirectMixin, Fo
             ip=get_client_ip_address(self.request), active=True, name=form.cleaned_data['name']
         )
         remember_cookie.save()
+        notify_security_change(self.request, self.request.user, TRUSTED_DEVICE_ADDED, name=remember_cookie.name)
         response = self.success_response()
         remember_cookie.set_cookie(response)
         return response
@@ -190,9 +242,7 @@ class ConfirmCookieModal(AuthGateMixin, CustomiseMixin, SuccessRedirectMixin, Fo
         return context
 
     def button_remove_device(self, id=None, **_kwargs):
-        # Filter on the user as well as the id: ids are client-supplied and must
-        # never delete another user's row.
-        RememberDeviceCookie.objects.filter(id=id, user=self.request.user).delete()
+        remove_trusted_device(self.request, id)
         return self.button_refresh_modal(whole_modal=True)
 
 
@@ -208,7 +258,7 @@ class UserDevices(AuthGateMixin, WebAuthnMixin, AjaxMessagesMixin, CustomiseMixi
                 + web_authn_script())
 
     def button_remove_device(self, id=None, **_kwargs):
-        RememberDeviceCookie.objects.filter(id=id, user=self.request.user).delete()
+        remove_trusted_device(self.request, id)
         return self.button_refresh_modal()
 
     def button_add_webauthn(self, **kwargs):
@@ -229,6 +279,7 @@ class UserDevices(AuthGateMixin, WebAuthnMixin, AjaxMessagesMixin, CustomiseMixi
             # does on the login setup screen -- and the naming modal that
             # follows would otherwise demand a step-up straight away.
             CookieBackend.mark_2fa(self.request)
+        notify_security_change(self.request, self.request.user, PASSKEY_ADDED, name=credential.name)
         # Success feedback + a chance to name it, instead of silently closing.
         return self.command_response(ajax_modal_replace(self.request, 'auth:name_passkey',
                                                         slug=f'pk-{credential.pk}'))
@@ -250,7 +301,10 @@ class UserDevices(AuthGateMixin, WebAuthnMixin, AjaxMessagesMixin, CustomiseMixi
                                      modal_button('Cancel', 'close', 'btn-secondary')])
 
     def button_confirm_remove_webauthn(self, id, **_kwargs):
-        WebauthnCredential.objects.filter(id=id, user=self.request.user).delete()
+        credential = WebauthnCredential.objects.filter(id=id, user=self.request.user).first()
+        if credential:
+            credential.delete()
+            notify_security_change(self.request, self.request.user, PASSKEY_REMOVED, name=credential.name)
         return self.button_refresh_modal()
 
     def get_modal_buttons(self):
@@ -289,13 +343,9 @@ class Modal2FARemove(AuthGateMixin, CustomiseMixin, Modal):
     modal_title = 'Remove 2FA'
 
     def button_confirm(self, **_kwargs):
-        # Delete every unconfirmed row too, and every passkey (all rp_ids) --
-        # "Remove 2FA" means the account reverts to password-only everywhere,
-        # rather than leaving orphaned passkeys with no UI to manage them.
-        TOTPDevice.objects.filter(user=self.request.user).delete()
-        WebauthnCredential.objects.filter(user=self.request.user).delete()
-        RememberDeviceCookie.objects.filter(user=self.request.user).delete()
+        remove_second_factors(self.request.user)
         self.request.session.pop('authentication_method', None)
+        notify_security_change(self.request, self.request.user, TWO_FACTOR_REMOVED)
         return self.command_response('reload')
 
     def get_modal_buttons(self):
@@ -303,15 +353,7 @@ class Modal2FARemove(AuthGateMixin, CustomiseMixin, Modal):
                 modal_button('Cancel', 'close', 'btn-secondary')]
 
     def modal_content(self):
-        removals = []
-        if TOTPDevice.objects.filter(user=self.request.user, confirmed=True).exists():
-            removals.append('your authenticator app')
-        passkeys = self.request.user.webauthn.count()
-        if passkeys:
-            removals.append(f'{passkeys} passkey{"s" if passkeys > 1 else ""}')
-        cookies = RememberDeviceCookie.objects.filter(user=self.request.user).count()
-        if cookies:
-            removals.append(f'{cookies} trusted device{"s" if cookies > 1 else ""}')
+        removals = describe_second_factors(self.request.user)
         message = 'Are you sure you want to remove the protection of two-factor authentication?'
         if removals:
             message += f'<br>This will remove {", ".join(removals)}.'
@@ -330,6 +372,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         self._locked = False
         self._mode = None
         self._passkeys = None
+        self._totp_device = None
 
     def dispatch(self, request, *args, **kwargs):
         if CookieBackend.get_part_login(request):
@@ -364,7 +407,11 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         FailedLoginAttempt.clear_failed_attempts(self.request, self.user, use_ip=False)
         CookieBackend.delete_part_login(self.request)
         auth_login(self.request, self.user, backend=get_cookie_backend_path())
-        self.request.session['authentication_method'] = '2fa'   # auth_login just rotated the key
+        # auth_login only rotates the key for a session that wasn't already this
+        # user's -- a step-up (cookie session) or a signed-in first-factor setup
+        # keeps its id otherwise. mark_2fa is the one place that upgrades a
+        # session, rotation included.
+        CookieBackend.mark_2fa(self.request)
 
     @ajax_method
     def auth(self, **kwargs):
@@ -399,9 +446,11 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
 
     def get_mode(self):
         if self._mode is None:
+            # Fetched once: the mode and the form (get_device) both need it.
+            self._totp_device = TOTPDevice.objects.filter(user=self.user, confirmed=True).first()
             if self._locked:
                 self._mode = 'locked'
-            elif TOTPDevice.objects.filter(user=self.user, confirmed=True).exists():
+            elif self._totp_device:
                 self._mode = 'totp'
             elif self.usable_passkeys():
                 # An existing passkey alone satisfies the second factor. TOTP
@@ -409,14 +458,10 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
                 # attacker must not be able to add their own factor to an
                 # account that already has one.
                 self._mode = 'passkey_only'
-            elif self.totp_allowed() and (
-                    self.request.session.get('totp_setup')
-                    or (self.request.method == 'POST'
-                        and TOTPDevice.objects.filter(user=self.user, confirmed=False).exists())):
-                # The POST clause keeps a user who was mid-QR-scan when this
-                # code deployed (unconfirmed device, no session flag) working.
-                self._mode = 'totp_new'
-            elif self.totp_allowed() and not self.passkeys_allowed():
+            elif self.totp_allowed() and (self.request.session.get('totp_setup') or not self.passkeys_allowed()):
+                # Only the session flag (set by the choice screen) or the policy
+                # selects enrolment -- never a stray unconfirmed row, which would
+                # turn every choice-screen button into a no-op.
                 self._mode = 'totp_new'
             else:
                 # Also reached with neither factor allowed: the choice screen
@@ -426,7 +471,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
 
     def get_device(self):
         if self.get_mode() == 'totp':
-            return TOTPDevice.objects.filter(user=self.user, confirmed=True).first()
+            return self._totp_device
         return pending_totp_device(self.request, self.user)
 
     @staticmethod
@@ -504,6 +549,7 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         # default name stands; it can be renamed under Passkeys & trusted
         # devices later.
         self.complete_login()
+        notify_security_change(self.request, self.user, PASSKEY_ADDED, name=credential.name)
         return self.success_response()
 
     def form_invalid(self, form):
@@ -515,7 +561,10 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         return super().form_invalid(form)
 
     def button_cancel(self, **_kwargs):
+        # Abandon a half-done enrolment: the flag and the unconfirmed secret go
+        # together, so the next login starts clean on the choice screen.
         self.request.session.pop('totp_setup', None)
+        TOTPDevice.objects.filter(user=self.user, confirmed=False).delete()
         if not CookieBackend.get_part_login(self.request) and self.request.user.is_authenticated:
             # A signed-in user backing out of setup/step-up keeps their session;
             # only a mid-login cancel abandons the login. On a full page (a
@@ -529,7 +578,10 @@ class Modal2FA(WebAuthnMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirect
         return self.command_response('show_modal', modal=reverse('auth:login'))
 
     def form_valid(self, form):
+        enrolled = self.get_mode() == 'totp_new'
         self.complete_login()
+        if enrolled:
+            notify_security_change(self.request, self.user, TOTP_ENROLLED)
         if form.cleaned_data.get('remember'):
             return self.command_response(ajax_modal_replace(self.request, 'auth:confirm_remember',
                                                             modal_type=self.request.POST.get('modal_type')))
@@ -558,11 +610,14 @@ class Change2FA(AuthGateMixin, AjaxMessagesMixin, CustomiseMixin, SuccessRedirec
         return self.command_response('close')
 
     def form_valid(self, form):
-        TOTPDevice.objects.filter(user=self.request.user, confirmed=True).exclude(id=form.device.id).delete()
+        replaced = TOTPDevice.objects.filter(user=self.request.user, confirmed=True).exclude(id=form.device.id)
+        event = TOTP_CHANGED if replaced.exists() else TOTP_ENROLLED
+        replaced.delete()
+        notify_security_change(self.request, self.request.user, event)
         return self.command_response('close')
 
     def get_form_kwargs(self):
-        if not TOTPDevice.objects.filter(user=self.request.user, confirmed=True).exists():
+        if not user_has_totp(self.request.user):
             self.modal_title = 'Set up authenticator app'
         return dict(**super().get_form_kwargs(), request=self.request,
                     device=pending_totp_device(self.request, self.request.user),
@@ -597,7 +652,9 @@ class ModalLoginView(CustomiseMixin, SuccessRedirectMixin, FormModal, LoginView)
             # Blocked by policy, not a wrong password: show the SSO message but
             # don't count it toward the brute-force lockout.
             return super().form_invalid(form)
-        FailedLoginAttempt.add_failed_attempt(self.request, self._user)
+        if not self._locked:
+            # Re-trying while locked must not perpetually extend the lockout.
+            FailedLoginAttempt.add_failed_attempt(self.request, self._user)
         return super().form_invalid(form)
 
     def dispatch(self, request, *args, **kwargs):
@@ -637,7 +694,12 @@ class ModalLoginView(CustomiseMixin, SuccessRedirectMixin, FormModal, LoginView)
 class ModalPasswordChangeView(CustomiseMixin, FormModal, PasswordChangeView):
     form_class = CrispyPasswordChangeForm
     modal_title = 'Change password'
+    # PasswordChangeView's default is reverse_lazy('password_change_done'), a URL
+    # consumers don't route; the redirect it builds is discarded for the command
+    # response anyway.
+    success_url = '/'
 
     def form_valid(self, form):
         PasswordChangeView.form_valid(self, form)
+        notify_security_change(self.request, self.request.user, PASSWORD_CHANGED)
         return self.command_response('reload')

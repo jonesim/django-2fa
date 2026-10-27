@@ -3,6 +3,8 @@ import json
 from time import time
 from unittest import mock
 from django.conf import settings
+from django.core import mail
+from django.utils import timezone
 from django.contrib.auth import BACKEND_SESSION_KEY, get_user_model
 from django.contrib.auth.models import Group, Permission
 from django.core.exceptions import ImproperlyConfigured
@@ -126,6 +128,11 @@ class SubclassedCookieBackend(CookieBackend):
     # A project scoping the backend to its own needs registers its own dotted path --
     # referenced by override_settings as 'examples.tests.SubclassedCookieBackend'.
     pass
+
+
+class QuietCustomise(CustomiseAuth):
+    # 'examples.tests.QuietCustomise'
+    security_notifications = False
 
 
 class SsoOnlyCustomise(CustomiseAuth):
@@ -273,6 +280,18 @@ class LoginTest(UserMixin, TestCase):
         self.test_not_logged_in()
         response = self.client.post(reverse('auth:login'), invalid_user)
         assert 'id_password' not in response.json()[0]['html']
+
+    def test_locked_account_rejects_correct_password(self):
+        # The lockout used to be UI-only: the form hid its fields, but a crafted
+        # POST with the right password still authenticated.
+        user = self.create_user()
+        FailedLoginAttempt.objects.create(user=user, failed_attempts=11,
+                                          locked_time=timezone.now() + datetime.timedelta(minutes=5))
+        response = self.client.post(reverse('auth:login'), test_user)
+        assert response.status_code == 200
+        assert '_auth_user_id' not in self.client.session
+        # ...and retrying while locked doesn't count as another attempt.
+        assert FailedLoginAttempt.objects.get(user=user).failed_attempts == 11
 
     def test_username_lockout_expires(self):
         user = self.create_user()
@@ -586,6 +605,29 @@ class TwoFactorSetupChoiceTest(UserMixin, TestCase):
         response = self._button('setup_back')
         assert not TOTPDevice.objects.filter(user=user).exists()
         assert 'setup_passkey' in response.content.decode()
+
+    def test_cancel_during_totp_setup_does_not_brick_next_login(self):
+        # Cancel used to leave the unconfirmed secret behind, and a stray row
+        # made every later choice-screen POST resolve to totp_new -- so both
+        # setup buttons became no-ops and the user could never log in.
+        user = self._part_login()
+        self._button('setup_totp')
+        self._button('cancel')
+        assert '_auth_user_id' not in self.client.session
+        assert not TOTPDevice.objects.filter(user=user).exists()
+        self.client.post(reverse('auth:login'), test_user)
+        response = self._button('setup_passkey')
+        assert response.json()[0]['function'] == 'register_authentication'
+        response = self._button('setup_totp')
+        assert 'id_code' in response.content.decode()
+
+    def test_stray_unconfirmed_row_does_not_change_mode(self):
+        # Belt and braces: even if an unconfirmed row survives (another tab,
+        # a crash), the choice screen's buttons still work.
+        user = self._part_login()
+        TOTPDevice.objects.create(user=user, confirmed=False)
+        response = self._button('setup_passkey')
+        assert response.json()[0]['function'] == 'register_authentication'
 
     def test_bare_post_cannot_bypass_choice(self):
         # The code field is deleted in choice mode; a crafted POST must not
@@ -1090,6 +1132,44 @@ class SessionRotationTest(UserMixin, TestCase):
         assert self.client.session['authentication_method'] == '2fa'
         assert self.client.session.session_key != before
 
+    def test_passkey_step_up_rotates_key(self):
+        # auth_login() neither flushes nor cycles when the same user is already
+        # in the session, so a cookie session stepped up by passkey kept its id.
+        user = self.create_user()
+        WebauthnCredential.objects.create(user=user, rp_id='localhost', credential_public_key='AAAA',
+                                          credential_id='abc123', sign_count=5)
+        self.login_as(user, method='cookie')
+        self.client.get(reverse('auth:auth_2fa'))
+        before = self.client.session.session_key
+        with mock.patch('modal_2fa.webauthn.verify_authentication_response',
+                        return_value=mock.Mock(new_sign_count=6)), \
+                mock.patch('modal_2fa.webauthn.base64url_to_bytes', return_value=b''):
+            self.client.post(reverse('auth:auth_2fa'), {'ajax_method': 'auth', 'data': json.dumps({'id': 'abc123'})},
+                             HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert self.client.session['authentication_method'] == '2fa'
+        assert self.client.session.session_key != before
+
+    def test_totp_step_up_rotates_key(self):
+        self.login_as(self.create_TOTP_user(), method='cookie')
+        before = self.client.session.session_key
+        self.client.post(reverse('auth:auth_2fa'), {'code': '154567'})
+        assert self.client.session['authentication_method'] == '2fa'
+        assert self.client.session.session_key != before
+
+    def test_first_passkey_from_setup_screen_rotates_key(self):
+        # A signed-in 'password' session using 'Set up 2FA' -> register().
+        self.login_as(self.create_user(), method='password')
+        self.client.post(reverse('auth:auth_2fa'), data=json.dumps({'button': 'setup_passkey'}),
+                         content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        before = self.client.session.session_key
+        verified = mock.Mock(credential_public_key=b'pub', credential_id=b'cid', sign_count=0)
+        with mock.patch('modal_2fa.webauthn.verify_registration_response', return_value=verified):
+            self.client.post(reverse('auth:auth_2fa'),
+                             {'ajax_method': 'register', 'data': json.dumps({'response': {}})},
+                             HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        assert self.client.session['authentication_method'] == '2fa'
+        assert self.client.session.session_key != before
+
 
 class StepUpCancelTest(UserMixin, TestCase):
 
@@ -1477,6 +1557,27 @@ class AuthMenuVisibilityTest(UserMixin, TestCase):
         assert reverse('auth:user_admin_modal') in html
         assert reverse('auth:security_admin_modal') in html
 
+    def _passkey_only_user(self):
+        user = self.create_user()
+        WebauthnCredential.objects.create(user=user, rp_id='localhost', credential_public_key='AAAA',
+                                          credential_id='abc123', sign_count=0)
+        return user
+
+    def test_passkey_user_sees_management_entries(self):
+        html = self.menu_html(self._passkey_only_user())
+        assert reverse('auth:user_devices') in html
+        assert reverse('auth:remove_2fa') in html
+        assert reverse('auth:auth_2fa') not in html
+
+    @override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.NoPasskeysCustomise')
+    def test_disallowed_passkey_is_not_a_factor_in_the_menu(self):
+        # Same predicate as AuthGateMixin: a session that isn't stepped up for
+        # this user must not be offered the entries the step-up protects.
+        html = self.menu_html(self._passkey_only_user())
+        assert reverse('auth:user_devices') not in html
+        assert reverse('auth:remove_2fa') not in html
+        assert reverse('auth:auth_2fa') in html
+
 
 class RememberCookieFlagsTest(UserMixin, TestCase):
     """The trusted-device (2FA-bypass) cookie carries hardened flags."""
@@ -1626,3 +1727,313 @@ class WagtailMisconfigurationTest(TestCase):
         request = RequestFactory().get('/cms/pages/')
         with self.assertRaisesMessage(ImproperlyConfigured, 'AuthenticationMiddleware'):
             Wagtail2FAMiddleware.check_request(request)
+
+
+class ManualTotpKeyTest(UserMixin, TestCase):
+    """The enrolment screen shows the secret for typing in, not just the QR code."""
+
+    def test_key_shown_matches_device(self):
+        user = self.create_user()
+        self.login_as(user, method='password')
+        content = self.client.get(reverse('auth:change_2fa')).content.decode()
+        device = TOTPDevice.objects.get(user=user, confirmed=False)
+        from base64 import b32encode
+        key = b32encode(device.bin_key).decode()
+        grouped = ' '.join(key[i:i + 4] for i in range(0, len(key), 4))
+        assert grouped in content
+        assert key in device.config_url
+        assert user.get_username() in content
+        assert settings.OTP_TOTP_ISSUER in content
+
+
+class SecurityNotificationTest(UserMixin, TestCase):
+    """The account owner is emailed on every change to their sign-in security."""
+
+    def _ajax(self, url_name, data):
+        return self.client.post(reverse(url_name), data=json.dumps(data),
+                                content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+
+    def _passkey(self, user, name='Work laptop'):
+        return WebauthnCredential.objects.create(user=user, rp_id='localhost', credential_public_key='AAAA',
+                                                 credential_id='abc123', sign_count=0, name=name)
+
+    def assert_one_email(self, user, *fragments):
+        assert len(mail.outbox) == 1, [m.subject for m in mail.outbox]
+        message = mail.outbox[0]
+        assert message.to == [user.email]
+        for fragment in fragments:
+            assert fragment in message.body, message.body
+        return message
+
+    def test_passkey_added_from_devices(self):
+        user = self.create_user()
+        self.login_as(user)
+        self._ajax('auth:user_devices', {'button': 'add_webauthn'})
+        verified = mock.Mock(credential_public_key=b'pub', credential_id=b'cid', sign_count=0)
+        with mock.patch('modal_2fa.webauthn.verify_registration_response', return_value=verified):
+            self.client.post(reverse('auth:user_devices'),
+                             {'ajax_method': 'register', 'data': json.dumps({'response': {}})},
+                             HTTP_X_REQUESTED_WITH='XMLHttpRequest', HTTP_USER_AGENT='TestBrowser/1')
+        message = self.assert_one_email(user, 'A passkey "', 'was added', 'TestBrowser/1', user.get_username())
+        assert 'Security change' in message.subject
+
+    def test_passkey_removed(self):
+        user = self.create_user()
+        credential = self._passkey(user)
+        self.login_as(user)
+        self._ajax('auth:user_devices', {'button': 'confirm_remove_webauthn', 'id': credential.id})
+        self.assert_one_email(user, 'passkey "Work laptop" was removed')
+
+    def test_removing_another_users_passkey_sends_nothing(self):
+        other = self.create_user(username='other@test.com')
+        credential = self._passkey(other)
+        self.login_as(self.create_user())
+        self._ajax('auth:user_devices', {'button': 'confirm_remove_webauthn', 'id': credential.id})
+        assert WebauthnCredential.objects.filter(id=credential.id).exists()
+        assert mail.outbox == []
+
+    def test_first_passkey_at_login(self):
+        user = self.create_user()
+        self.client.post(reverse('auth:login'), test_user)
+        self._ajax('auth:auth_2fa', {'button': 'setup_passkey'})
+        verified = mock.Mock(credential_public_key=b'pub', credential_id=b'cid', sign_count=0)
+        with mock.patch('modal_2fa.webauthn.verify_registration_response', return_value=verified):
+            self.client.post(reverse('auth:auth_2fa'),
+                             {'ajax_method': 'register', 'data': json.dumps({'response': {}})},
+                             HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        self.assert_one_email(user, 'A passkey "', 'was added')
+
+    def _enrol_totp_at_login(self):
+        user = self.create_user()
+        self.client.post(reverse('auth:login'), test_user)
+        self._ajax('auth:auth_2fa', {'button': 'setup_totp'})
+        device = TOTPDevice.objects.get(user=user, confirmed=False)
+        for field, value in TEST_TOTP.items():
+            setattr(device, field, value)
+        device.t0 = int(time() - (30 * 3))
+        device.save()
+        return user
+
+    def test_totp_enrolled_at_login(self):
+        user = self._enrol_totp_at_login()
+        self.client.post(reverse('auth:auth_2fa'), {'code': '154567'})
+        self.assert_one_email(user, 'authenticator app was set up')
+
+    def test_totp_verification_sends_nothing(self):
+        # Verifying an existing factor isn't a change.
+        self.create_TOTP_user()
+        self.client.post(reverse('auth:login'), test_user)
+        self.client.post(reverse('auth:auth_2fa'), {'code': '154567'})
+        assert self.client.session['authentication_method'] == '2fa'
+        assert mail.outbox == []
+
+    def _change_2fa(self, user):
+        self.client.get(reverse('auth:change_2fa'))
+        device = TOTPDevice.objects.get(user=user, confirmed=False)
+        for field, value in TEST_TOTP.items():
+            setattr(device, field, value)
+        device.t0 = int(time() - (30 * 3))
+        device.save()
+        self.client.post(reverse('auth:change_2fa'), {'code': '154567'})
+
+    def test_totp_changed(self):
+        user = self.create_TOTP_user()
+        self.login_as(user)
+        self._change_2fa(user)
+        self.assert_one_email(user, 'authenticator app for your account was changed')
+
+    def test_totp_set_up_by_passkey_user(self):
+        user = self.create_user()
+        self._passkey(user)
+        self.login_as(user)
+        self._change_2fa(user)
+        self.assert_one_email(user, 'authenticator app was set up')
+
+    def test_trusted_device_added_and_removed(self):
+        user = self.create_TOTP_user()
+        self.login_as(user)
+        self.client.post(reverse('auth:confirm_remember'), {'name': 'Kitchen PC'}, HTTP_USER_AGENT='x')
+        cookie = RememberDeviceCookie.objects.get(user=user)
+        self.assert_one_email(user, 'trusted device "Kitchen PC" was added')
+        mail.outbox.clear()
+        self._ajax('auth:user_devices', {'button': 'remove_device', 'id': cookie.id})
+        assert not RememberDeviceCookie.objects.filter(id=cookie.id).exists()
+        self.assert_one_email(user, 'trusted device "Kitchen PC" was removed')
+
+    def test_two_factor_removed(self):
+        user = self.create_TOTP_user()
+        self.login_as(user)
+        self._ajax('auth:remove_2fa', {'button': 'confirm'})
+        self.assert_one_email(user, 'Two-factor authentication was removed')
+
+    def test_password_changed(self):
+        user = self.create_user()
+        self.login_as(user)
+        self.client.post(reverse('auth:change_password'),
+                         {'old_password': test_user['password'], 'new_password1': 'Xk9#pLm2qRt7!v',
+                          'new_password2': 'Xk9#pLm2qRt7!v'})
+        self.assert_one_email(user, 'password for your account was changed')
+
+    def test_password_reset_link_notifies_but_invite_does_not(self):
+        from django.contrib.auth.tokens import default_token_generator
+        from django.utils.encoding import force_bytes
+        from django.utils.http import urlsafe_base64_encode
+        for url_name, expected in (('auth:password_reset_confirm', 1), ('auth:invite_user', 0)):
+            with self.subTest(url=url_name):
+                mail.outbox.clear()
+                self.client.logout()
+                user = self.create_user(username=f'{url_name}@test.com')
+                uid = urlsafe_base64_encode(force_bytes(user.pk))
+                token = default_token_generator.make_token(user)
+                # Django's confirm view stashes the token in the session on GET and
+                # expects the POST at the 'set-password' URL.
+                self.client.get(reverse(url_name, kwargs={'uidb64': uid, 'token': token}))
+                self.client.post(reverse(url_name, kwargs={'uidb64': uid, 'token': 'set-password'}),
+                                 {'new_password1': 'Xk9#pLm2qRt7!v', 'new_password2': 'Xk9#pLm2qRt7!v'})
+                user.refresh_from_db()
+                assert user.check_password('Xk9#pLm2qRt7!v')
+                assert len(mail.outbox) == expected
+
+    def test_no_email_address_sends_nothing(self):
+        user = self.create_TOTP_user()
+        user.email = ''
+        user.save()
+        self.login_as(user)
+        self._ajax('auth:remove_2fa', {'button': 'confirm'})
+        assert mail.outbox == []
+        assert not user.totpdevice_set.exists()
+
+    @override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.QuietCustomise')
+    def test_notifications_can_be_switched_off(self):
+        user = self.create_TOTP_user()
+        self.login_as(user)
+        self._ajax('auth:remove_2fa', {'button': 'confirm'})
+        assert mail.outbox == []
+        assert not user.totpdevice_set.exists()
+
+    def test_mail_failure_does_not_undo_the_change(self):
+        user = self.create_TOTP_user()
+        self.login_as(user)
+        with mock.patch('modal_2fa.notify.send_mail', side_effect=ConnectionError('smtp down')), \
+                self.assertLogs('modal_2fa', level='ERROR') as logs:
+            response = self._ajax('auth:remove_2fa', {'button': 'confirm'})
+        assert response.status_code == 200
+        assert not user.totpdevice_set.exists()
+        assert 'two_factor_removed' in logs.output[0]
+
+
+class AdminReset2FATest(UserMixin, TestCase):
+    """An administrator can strip a user's factors so they re-enrol at next login."""
+
+    def _target(self):
+        user = self.create_user(username='target@test.com')
+        user.totpdevice_set.create(key=TEST_TOTP['key'], confirmed=True)
+        user.totpdevice_set.create(key=TEST_TOTP['key'], confirmed=False)
+        WebauthnCredential.objects.create(user=user, rp_id='other.example', credential_public_key='AAAA',
+                                          credential_id='abc123', sign_count=0)
+        RememberDeviceCookie.objects.create(user=user, active=True, name='laptop')
+        FailedLoginAttempt.objects.create(user=user, failed_attempts=99,
+                                          locked_time=timezone.now() + datetime.timedelta(hours=1))
+        return user
+
+    def _confirm(self, user):
+        return self.client.post(reverse('auth:reset_user_2fa', args=[f'pk-{user.pk}']),
+                                data=json.dumps({'button': 'confirm'}),
+                                content_type='application/json', HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+
+    def test_confirm_screen_describes_what_goes(self):
+        target = self._target()
+        self.login_as(self.grant_user_admin(self.create_user()))
+        content = self.client.get(reverse('auth:reset_user_2fa', args=[f'pk-{target.pk}'])).content.decode()
+        assert 'target@test.com' in content
+        assert 'their authenticator app' in content
+        assert '1 passkey' in content
+        assert '1 trusted device' in content
+
+    def test_reset_removes_everything_and_notifies(self):
+        target = self._target()
+        self.login_as(self.grant_user_admin(self.create_user()))
+        response = self._confirm(target)
+        assert {'function': 'reload'} in response.json()
+        assert not target.totpdevice_set.exists()
+        assert not target.webauthn.exists()
+        assert not RememberDeviceCookie.objects.filter(user=target).exists()
+        assert not FailedLoginAttempt.objects.filter(user=target).exists()
+        assert len(mail.outbox) == 1
+        assert mail.outbox[0].to == [target.email]
+        assert 'reset by an administrator' in mail.outbox[0].body
+        # The user is back to first-time setup at their next login.
+        self.client.logout()
+        self.client.post(reverse('auth:login'), {'username': 'target@test.com', 'password': test_user['password']})
+        content = self.client.get(reverse('auth:auth_2fa')).content.decode()
+        assert 'setup_passkey' in content
+
+    def test_plain_user_cannot_reset(self):
+        target = self._target()
+        self.login_as(self.create_user())
+        with self.assertRaises(ModalException):
+            self.client.get(reverse('auth:reset_user_2fa', args=[f'pk-{target.pk}']))
+        with self.assertRaises(ModalException):
+            self._confirm(target)
+        assert target.totpdevice_set.filter(confirmed=True).exists()
+        assert mail.outbox == []
+
+    def test_anonymous_cannot_reset(self):
+        target = self._target()
+        with self.assertRaises(ModalException):
+            self._confirm(target)
+        assert target.totpdevice_set.filter(confirmed=True).exists()
+
+    def test_button_in_user_admin_table(self):
+        self.login_as(self.create_user(is_superuser=True, is_staff=True))
+        content = self.client.get(reverse('auth:user_admin_modal')).content.decode()
+        assert 'Reset 2FA' in content
+
+
+class PasswordResetThrottleTest(UserMixin, TestCase):
+    """Reset requests count toward the login lockout, so they can't be used to
+    flood a mailbox or probe for accounts."""
+
+    def _request(self, email=test_user['username']):
+        return self.client.post(reverse('auth:reset_password'), {'email': email})
+
+    @override_settings(AUTHENTICATION_USER_FAILED_ATTEMPTS=2, AUTHENTICATION_LOCKOUT_SECONDS=600)
+    def test_known_email_is_throttled_per_account(self):
+        user = self.create_user()
+        for _ in range(3):
+            self._request()
+        assert len(mail.outbox) == 3
+        response = self._request()
+        assert len(mail.outbox) == 3
+        assert 'Too many attempts' in response.content.decode()
+        assert 'locked' not in response.content.decode().lower()   # nothing account-specific
+        assert FailedLoginAttempt.objects.get(user=user).locked_time is not None
+        # The lockout carries over to the login form too.
+        response = self.client.post(reverse('auth:login'), test_user)
+        assert '_auth_user_id' not in self.client.session
+
+    @override_settings(AUTHENTICATION_IP_FAILED_ATTEMPTS=2, AUTHENTICATION_LOCKOUT_SECONDS=600)
+    def test_unknown_emails_are_throttled_per_ip(self):
+        for n in range(3):
+            response = self._request(f'nobody{n}@test.com')
+            assert 'Too many attempts' not in response.content.decode()
+        response = self._request('nobody99@test.com')
+        assert 'Too many attempts' in response.content.decode()
+        assert mail.outbox == []
+        assert FailedLoginAttempt.objects.get(user__isnull=True).locked_time is not None
+
+    @override_settings(AUTHENTICATION_IP_FAILED_ATTEMPTS=2, AUTHENTICATION_LOCKOUT_SECONDS=600)
+    def test_response_does_not_distinguish_known_from_unknown(self):
+        self.create_user()
+        known = self._request().content.decode()
+        unknown = self._request('nobody@test.com').content.decode()
+        assert known == unknown
+
+    @override_settings(AUTHENTICATION_USER_FAILED_ATTEMPTS=2, AUTHENTICATION_LOCKOUT_SECONDS=600)
+    def test_locked_account_gets_no_reset_email(self):
+        user = self.create_user()
+        FailedLoginAttempt.objects.create(user=user, failed_attempts=3,
+                                          locked_time=timezone.now() + datetime.timedelta(minutes=5))
+        response = self._request()
+        assert 'Too many attempts' in response.content.decode()
+        assert mail.outbox == []

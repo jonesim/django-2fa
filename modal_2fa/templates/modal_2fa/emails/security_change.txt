@@ -1,0 +1,11 @@
+{% autoescape off %}{{ message }}
+
+Account: {{ user.get_username }}
+When: {{ when|date:"DATETIME_FORMAT" }}
+From IP address: {{ ip }}
+Browser: {{ user_agent }}
+
+If this was you, no action is needed. If it wasn't, change your password and review your passkeys and trusted devices at {{ protocol }}://{{ domain }} as soon as possible.
+
+The {{ site_name }} team
+{% endautoescape %}

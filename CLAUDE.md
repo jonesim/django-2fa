@@ -47,7 +47,8 @@ Provides drop-in 2FA authentication for Django projects using `django-nested-mod
 | `webauthn.py` | `WebAuthnMixin` for passkey (FIDO2/WebAuthn) registration and authentication; `user_has_passkey`, `credential_descriptor` |
 | `customise.py` | `CustomiseAuth` — override this class to configure package behaviour per-project |
 | `menus.py` | `add_auth_menu(view)` — injects the user dropdown into any view's menu |
-| `user_admin.py` | `UserTable`/`UserAdminModal` — datatable + modal for user management |
+| `user_admin.py` | `UserTable`/`UserAdminModal` — datatable + modal for user management; `users.ModalResetUser2FA` (`auth:reset_user_2fa`, gated on `can_manage_users`) strips a user's factors + trusted devices and clears their lockout |
+| `notify.py` | Security-change emails (`notify_security_change(request, user, event, name=None)`); event constants + default wording in `SECURITY_EVENTS`; never raises |
 | `security_admin.py` | `SecurityAdminModal` (superuser only) — view/clear `FailedLoginAttempt` lockouts and view/force-logout active sessions |
 | `urls.py` | `pattern_dict` + `make_url_patterns()` — all auth URLs under `auth/` namespace |
 | `wagtail_auth.py` | Optional Wagtail support — shadows Wagtail's auth URLs and gates its admin on 2FA (inert unless `wagtail_admin_prefix` is set) |
@@ -86,6 +87,11 @@ Key hooks to override:
 - `excluded_ips` / `is_ip_excluded(ip)` — IP/CIDR allowlist exempt from the **shared-IP** lockout (per-user lockout still applies); see below
 - `factor_management_methods` — `authentication_method` values that may use the factor-management modals (`user_devices`, `change_2fa`, `remove_2fa`, `confirm_remember`, `name_passkey`) directly; default `('2fa', 'microsoft')`. `AuthGateMixin` steps any other session of a user who **has** a factor (e.g. a `'cookie'` login) up through `Modal2FA` first, so it can't enrol its own factor and upgrade itself to `'2fa'`. A user with no factor passes straight through to enrol one, and their first passkey added in `UserDevices` marks the session `'2fa'` (as the login setup screen does)
 - Email template attributes (`invite_email_template`, `reset_password_email_template`, etc.)
+- `security_notifications` (default `True`) / `security_events` / `notify_security_change(request, user, event, name=None)` — the account owner is emailed on every factor, trusted-device, 2FA-removal/reset and password change. Views call `modal_2fa.notify.notify_security_change`, which delegates to the hook and logs (never raises) on failure. Verifying an existing factor sends nothing. `UserInvite` sets the first password and deliberately doesn't notify
+
+Shared helpers in `auth.py`: `remove_second_factors(user)` / `describe_second_factors(user)` (used by both the user's "Remove 2FA" and the admin reset) and `remove_trusted_device(request, id)`.
+
+Lockouts are enforced server-side in `clean()` on both `CrispyLoginForm` and `Form2FA`, not only by hiding the fields; `ResetPasswordModal` counts each reset request as an attempt (IP + named account) and refuses with a generic message while locked. The TOTP enrolment screen (`new_totp.html`) shows the base32 key for manual entry alongside the QR code.
 
 ### URL Registration
 

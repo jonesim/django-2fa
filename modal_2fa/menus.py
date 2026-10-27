@@ -2,9 +2,9 @@ from ajax_helpers.utils import ajax_command
 from django.urls import reverse, NoReverseMatch
 from django_menus.menu import MenuItem, DividerItem
 
-from .backends import user_has_totp
+from .backends import user_has_second_factor, user_has_totp
 from .utils import get_custom_auth
-from .webauthn import user_has_passkey, user_may_use_passkeys
+from .webauthn import user_may_use_passkeys
 
 
 def user_display(user):
@@ -22,15 +22,19 @@ def add_auth_menu(view):
         # Gate on what the user actually has rather than how this session was
         # established -- a passkey-only user must still reach the management
         # entries (there is no TOTP step in their history to set a marker).
+        # Same predicate as AuthGateMixin, so the entries offered are exactly
+        # the ones a step-up protects: a passkey allow_passkeys no longer
+        # permits isn't a factor here either.
         user = view.request.user
+        customise = get_custom_auth()
         has_totp = user_has_totp(user)
-        if has_totp or user_has_passkey(user):
+        if user_has_second_factor(user):
             dropdown += [('auth:user_devices', 'Passkeys & trusted devices')]
-            if get_custom_auth().allow_totp(user):
+            if customise.allow_totp(user):
                 dropdown += [('auth:change_2fa', 'Change authenticator app' if has_totp
                               else 'Set up authenticator app')]
             dropdown += [('auth:remove_2fa', 'Remove 2FA')]
-        elif get_custom_auth().allow_totp(user) or user_may_use_passkeys(user):
+        elif customise.allow_totp(user) or user_may_use_passkeys(user):
             dropdown += [('auth:auth_2fa', 'Set up 2FA')]
 
         dropdown += [
@@ -38,7 +42,7 @@ def add_auth_menu(view):
             DividerItem()
         ]
 
-        if get_custom_auth().can_manage_users(view.request.user, view.request):
+        if customise.can_manage_users(view.request.user, view.request):
             try:
                 user_admin = reverse('auth:user_admin_modal')
                 dropdown += [
@@ -49,7 +53,7 @@ def add_auth_menu(view):
             except NoReverseMatch:
                 pass
 
-        if get_custom_auth().can_manage_security(view.request.user, view.request):
+        if customise.can_manage_security(view.request.user, view.request):
             try:
                 security_admin = reverse('auth:security_admin_modal')
                 dropdown += [

@@ -10,7 +10,12 @@ from django_modals.modals import ModelFormModal, Modal
 from django_modals.helper import modal_button, modal_button_method
 from django_modals.processes import PERMISSION_METHOD
 
-from .auth import CustomiseMixin
+from django.utils.html import escape
+from django.utils.safestring import mark_safe
+
+from .auth import CustomiseMixin, describe_second_factors, remove_second_factors
+from .models import FailedLoginAttempt
+from .notify import notify_security_change, TWO_FACTOR_RESET
 from .utils import get_custom_auth
 
 UserModel = get_user_model()
@@ -96,6 +101,42 @@ class ModalInviteUser(UserAdminPermissionMixin, CustomiseMixin, Modal, PasswordR
         form.is_valid()
         self.form_valid(form)
         return self.command_response('close')
+
+
+class ModalResetUser2FA(UserAdminPermissionMixin, CustomiseMixin, Modal):
+    """Administrator reset for a user who has lost their second factor: strips
+    every TOTP device, passkey and trusted device so they go through first-time
+    setup at their next sign-in, and clears their lockout (a locked-out user is
+    usually why an administrator is here). The user is emailed."""
+
+    modal_title = 'Reset 2FA'
+    size = 'md'
+
+    @property
+    def user(self):
+        return UserModel.objects.get(id=self.kwargs['pk'])
+
+    def modal_content(self):
+        user = self.user
+        removals = describe_second_factors(user)
+        who = f'<b>{escape(user.get_username())}</b>'
+        if not removals:
+            return mark_safe(f'{who} has no second factor or trusted device. '
+                             f'Resetting will only clear any lockout on the account.')
+        return mark_safe(f'Reset two-factor authentication for {who}?<br>'
+                         f'This will remove {", ".join(removals).replace("your ", "their ")}. '
+                         f'They will be asked to set up 2FA again when they next sign in.')
+
+    def get_modal_buttons(self):
+        return [modal_button_method('Reset', 'confirm', 'btn-danger'),
+                modal_button('Cancel', 'close', 'btn-secondary')]
+
+    def button_confirm(self, **_kwargs):
+        user = self.user
+        remove_second_factors(user)
+        FailedLoginAttempt.objects.filter(user=user).delete()
+        notify_security_change(self.request, user, TWO_FACTOR_RESET)
+        return self.command_response('reload')
 
 
 class LogoutUser(AjaxHelpers, View):

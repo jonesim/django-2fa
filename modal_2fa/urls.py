@@ -34,6 +34,7 @@ pattern_dict = {
     'invite_user': ('user_invite/<uidb64>/<token>/', auth.UserInvite),
     'user': ('user/<slug>', users.ModalUserForm),
     'invite_user_confirm': ('confirm_invite/<slug:slug>/', users.ModalInviteUser),
+    'reset_user_2fa': ('reset-user-2fa/<slug:slug>/', users.ModalResetUser2FA),
     'logout_user': ('logout-user/', users.LogoutUser),
 }
 

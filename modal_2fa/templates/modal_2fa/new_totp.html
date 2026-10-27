@@ -2,6 +2,12 @@
     <div>
         <p>Scan QR code into your two factor authentication app.</p>
         <p>App options include Google Authenticator, Authy and Microsoft.</p>
+        <details class="small text-muted">
+            <summary>Can't scan the code?</summary>
+            <p class="mt-2 mb-1">Enter this key in your app instead (time-based, {{ digits }} digits):</p>
+            <code class="user-select-all" style="word-break: break-all">{{ secret }}</code>
+            <p class="mb-0 mt-1">Account: {{ account }}{% if issuer %} &middot; Issuer: {{ issuer }}{% endif %}</p>
+        </details>
     </div>
     <div class="ml-auto">
         {{ svg }}

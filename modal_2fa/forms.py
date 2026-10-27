@@ -1,8 +1,10 @@
-﻿from io import BytesIO
+﻿from base64 import b32encode
+from io import BytesIO
 import qrcode
 
 from qrcode.image.svg import SvgPathFillImage
 
+from django.conf import settings
 from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
 from django.contrib.auth.forms import SetPasswordForm, AuthenticationForm, PasswordResetForm, PasswordChangeForm
@@ -42,6 +44,14 @@ class CrispyLoginForm(CrispyFormMixin, AuthenticationForm):
         self.sso_only = sso_only
         super().__init__(*args, **kwargs)
 
+    def clean(self):
+        if self.locked:
+            # Server-side guard: post_init only hides the fields. A crafted POST
+            # with the right password while locked must still be refused, or the
+            # lockout is cosmetic.
+            raise ValidationError(self.locked)
+        return super().clean()
+
     def post_init(self, *args, **kwargs):
         if self.locked:
             self.no_buttons = True
@@ -79,6 +89,19 @@ class Form2FA(CrispyForm):
         svg.seek(0)
         return mark_safe(svg.read().decode('UTF-8'))
 
+    @staticmethod
+    def manual_key(device):
+        """The secret as authenticator apps accept it typed in (base32, grouped
+        in fours) -- for a user on the same device as the app, or with no
+        camera. The same value the QR code carries."""
+        key = b32encode(device.bin_key).decode()
+        return ' '.join(key[i:i + 4] for i in range(0, len(key), 4))
+
+    @staticmethod
+    def totp_issuer(device):
+        issuer = getattr(settings, 'OTP_TOTP_ISSUER', None)
+        return issuer(device) if callable(issuer) else issuer
+
     def post_init(self, *args, **kwargs):
         self.buttons = []
         if self.locked:
@@ -113,7 +136,13 @@ class Form2FA(CrispyForm):
                              cancel]
             return (HTML(render_to_string('modal_2fa/passkey_prompt.html')), HTML(web_authn_script()))
         if self.factor_mode == 'totp_new':
-            layout = (HTML(render_to_string('modal_2fa/new_totp.html', {'svg': self.get_qr_code(self.device)})),)
+            layout = (HTML(render_to_string('modal_2fa/new_totp.html', {
+                'svg': self.get_qr_code(self.device),
+                'secret': self.manual_key(self.device),
+                'account': self.device.user.get_username(),
+                'issuer': self.totp_issuer(self.device),
+                'digits': self.device.digits,
+            })),)
             self.buttons.append(self.submit_button())
             if self.back_button:
                 self.buttons.append(self.button('Back', dict(function='post_modal', button='setup_back'),

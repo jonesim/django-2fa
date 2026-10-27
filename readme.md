@@ -11,8 +11,13 @@ brute-force lockout, email invites, and optional "Sign in with Microsoft".
   alone satisfies the second factor — no authenticator app required. Users can name,
   rename and remove their passkeys.
 * **TOTP** – authenticator apps (Google Authenticator, Authy, etc.) with an on-screen QR code
+  and the key for typing in when the code can't be scanned
 * **Trusted devices** – an optional cookie to skip 2FA on a named device (the key rotates on each use, so a copied cookie stops working)
-* **Lockout** – throttle repeated failures by username and by IP (proxy-aware)
+* **Lockout** – throttle repeated failures by username and by IP (proxy-aware); password
+  reset requests count too
+* **Security notifications** – the account owner is emailed when a passkey, authenticator
+  app or trusted device is added or removed, 2FA is removed or reset, or the password changes
+* **Admin reset** – an administrator can strip a locked-out user's factors so they re-enrol
 * **Microsoft / Entra sign-in** – optional single-tenant SSO, off unless configured
 * **User onboarding** – email invitations to set a password, plus a forgotten-password reset flow
 * **Customisable** – restyle every modal and override behaviour from one class
@@ -103,6 +108,13 @@ Repeated failures are throttled per username and per IP. Defaults shown:
 | `AUTHENTICATION_USER_FAILED_ATTEMPTS` | `10` | Failures before a username is locked |
 | `AUTHENTICATION_IP_FAILED_ATTEMPTS` | `20` | Failures before an IP is locked |
 | `AUTHENTICATION_LOCKOUT_SECONDS` | `30` | Lockout duration once the threshold is hit |
+
+Password reset requests count toward both counters (against the IP, and against
+the account the email names), so the reset form can't be used to flood a mailbox
+or probe for accounts; a throttled request gets a generic "too many attempts"
+message whether or not the email matched. Note the login lockout is enforced
+server-side -- a POST carrying the correct password is refused while locked, not
+just hidden.
 
 Clear expired rows periodically with the bundled command:
 
@@ -252,6 +264,23 @@ for a future passwordless flow), `allowed_remember`, `max_cookies`,
 (swap any URL→view mapping), and the email template attributes for invitations
 and password resets.
 
+### Security notifications
+
+Every change to a user's sign-in security emails the account owner: a passkey,
+authenticator app or trusted device added or removed, 2FA removed (by the user)
+or reset (by an administrator), and a password change. Verifying an existing
+factor is not a change and sends nothing. The email names the event, the
+account, the time, the IP and the browser, and says what to do if it wasn't them.
+
+Set `security_notifications = False` on your `CustomiseAuth` subclass to turn
+them off, change `security_notification_txt_email_template` /
+`security_notification_subject_template` (and the optional HTML
+`security_notification_email_template`) to restyle them, edit the
+`security_events` dict to reword an event, or override
+`notify_security_change(request, user, event, name=None)` to log, raise a
+signal or route them elsewhere. A failure to send is logged under the
+`modal_2fa` logger and never undoes the change it reports.
+
 
 ### Protecting only part of a site
 
@@ -280,7 +309,9 @@ Two hooks gate the admin surfaces. Unlike the hooks above they take
 permission systems that depend on session or site state:
 
 * `can_manage_users(user, request=None)` — user create/edit/view, the user admin
-  table, and email invites. Defaults to the `change` permission on your *own*
+  table, email invites, and **Reset 2FA** (strips a user's authenticator app,
+  passkeys and trusted devices and clears their lockout, so they go through
+  first-time 2FA setup at their next sign-in; the user is emailed). Defaults to the `change` permission on your *own*
   user model, derived from `get_user_model()` — so it is correct under a swapped
   `AUTH_USER_MODEL` (e.g. `myapp.change_usermodel`, not `auth.change_user`).
 * `can_manage_security(user, request=None)` — the Security Admin modal. Defaults

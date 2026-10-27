@@ -6,6 +6,7 @@ from django.contrib.auth.views import PasswordResetView
 from .urls import make_url_patterns, pattern_dict
 from .auth import Modal2FA
 from .models import RememberDeviceCookie
+from .notify import SECURITY_EVENTS, event_message, send_security_change_email
 from .microsoft import MicrosoftCustomiseMixin, register_microsoft_urls
 from .wagtail_auth import WagtailCustomiseMixin, wagtail_url_patterns
 
@@ -67,6 +68,16 @@ class CustomiseAuth(MicrosoftCustomiseMixin, WagtailCustomiseMixin):
     reset_password_txt_email_template = 'modal_2fa/emails/password_reset_email.html'
     reset_password_subject_template = 'modal_2fa/emails/password_reset_subject.txt'
 
+    # Security-change notifications: the account owner is emailed whenever a
+    # passkey, authenticator app or trusted device is added or removed, 2FA is
+    # removed or reset, or the password changes. Set False to turn them off, or
+    # override notify_security_change() to reword, log or route them elsewhere.
+    security_notifications = True
+    security_notification_email_template = None
+    security_notification_txt_email_template = 'modal_2fa/emails/security_change.txt'
+    security_notification_subject_template = 'modal_2fa/emails/security_change_subject.txt'
+    security_events = dict(SECURITY_EVENTS)   # event -> message; '{name}' is the passkey/device name
+
     # IP allowlist for the brute-force lockout. Addresses / CIDR ranges here are
     # never blocked by the *shared-IP* lockout (e.g. trusted office / VPN / NAT
     # egress, where one bad actor would otherwise lock out everyone). The
@@ -96,6 +107,20 @@ class CustomiseAuth(MicrosoftCustomiseMixin, WagtailCustomiseMixin):
             except ValueError:
                 continue   # ignore malformed allowlist entries rather than 500
         return False
+
+    @classmethod
+    def notify_security_change(cls, request, user, event, name=None):
+        """Called after every change to ``user``'s sign-in security (see
+        ``security_events`` for the event names). ``request`` is the request
+        that made the change -- for an administrator reset, the admin's.
+        Exceptions are logged and swallowed by the caller; the change has
+        already happened."""
+        if not cls.security_notifications or not user.email:
+            return
+        send_security_change_email(request, user, event, event_message(event, name, cls.security_events),
+                                   cls.security_notification_subject_template,
+                                   cls.security_notification_txt_email_template,
+                                   cls.security_notification_email_template)
 
     @staticmethod
     def override_views():

@@ -61,6 +61,7 @@ def add_user_columns(table):
         Password(column_name='Password'),
         'last_login',
         EditColumn(modal_name='auth:invite_user_confirm', button_text='Invite'),
+        EditColumn(modal_name='auth:reset_user_2fa', button_text='Reset 2FA', css_class='btn btn-sm btn-outline-danger'),
         EditColumn(modal_name='auth:user'),
     )
 
