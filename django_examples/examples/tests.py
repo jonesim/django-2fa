@@ -11,7 +11,7 @@ from django.urls import reverse
 
 from django.http import HttpResponse
 
-from django_modals.modals import ModalException
+from django_modals.modals.modals import ModalException
 from django_modals.processes import PROCESS_EDIT
 
 from modal_2fa.backends import CookieBackend
@@ -821,3 +821,93 @@ class RememberCookieFlagsTest(UserMixin, TestCase):
         assert morsel['secure']
         assert morsel['httponly']
         assert morsel['samesite'] == 'Lax'
+
+
+class ShortTrustCustomise(CustomiseAuth):
+    # Referenced by override_settings as 'examples.tests.ShortTrustCustomise'.
+    @staticmethod
+    def remember_days(user, request=None):
+        return 1
+
+
+class HostRpIdCustomise(CustomiseAuth):
+    # Referenced by override_settings as 'examples.tests.HostRpIdCustomise': the rp id is the request's host.
+    @staticmethod
+    def webauthn_rp_id(request):
+        return request.get_host().split(':')[0] if request else 'fallback.example'
+
+
+class RememberDaysTest(UserMixin, TestCase):
+    """A trusted device skips 2FA for remember_days from when it was trusted, checked on the server."""
+
+    def _request(self, cookie):
+        request = RequestFactory().get('/')
+        request.COOKIES[RememberDeviceCookie.cookie_name(cookie.user)] = f'{cookie.key}:{cookie.id}'
+        return request
+
+    def _cookie(self, age_days):
+        user = self.create_user()
+        cookie = RememberDeviceCookie.objects.create(user=user, key='abc', active=True)
+        RememberDeviceCookie.objects.filter(id=cookie.id).update(
+            created=cookie.created - datetime.timedelta(days=age_days))
+        cookie.refresh_from_db()
+        return cookie
+
+    def test_default_is_a_year(self):
+        cookie = self._cookie(age_days=364)
+        assert RememberDeviceCookie.test_cookie(self._request(cookie), cookie.user, active=True)
+        cookie = RememberDeviceCookie.objects.get(id=cookie.id)
+        RememberDeviceCookie.objects.filter(id=cookie.id).update(
+            created=cookie.created - datetime.timedelta(days=2))
+        assert not RememberDeviceCookie.test_cookie(self._request(cookie), cookie.user, active=True)
+
+    @override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.ShortTrustCustomise')
+    def test_a_cookie_older_than_remember_days_is_refused(self):
+        """The browser may keep the cookie; the server still stops trusting it on time."""
+        fresh = self._cookie(age_days=0)
+        assert RememberDeviceCookie.test_cookie(self._request(fresh), fresh.user, active=True)
+        RememberDeviceCookie.objects.filter(id=fresh.id).update(
+            created=fresh.created - datetime.timedelta(days=1, minutes=1))
+        assert not RememberDeviceCookie.test_cookie(self._request(fresh), fresh.user, active=True)
+
+    @override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.ShortTrustCustomise')
+    def test_cookie_expires_remember_days_after_it_was_trusted(self):
+        """Rotating the key on each use must not stretch the trust: the expiry follows ``created``."""
+        cookie = self._cookie(age_days=0)
+        response = HttpResponse()
+        cookie.set_cookie(response)
+        expires = response.cookies[RememberDeviceCookie.cookie_name(cookie.user)]['expires']
+        expected = cookie.created + datetime.timedelta(days=1)
+        assert expires == expected.strftime('%a, %d %b %Y %H:%M:%S GMT')
+
+
+@override_settings(AUTHENTICATION_CUSTOMISATION='examples.tests.HostRpIdCustomise', WEBAUTHN_RP_NAME='',
+                   ALLOWED_HOSTS=['.example.com'])
+class PerRequestRpIdTest(UserMixin, TestCase):
+    """The rp id comes from CustomiseAuth.webauthn_rp_id, per request."""
+
+    def _view(self, host):
+        view = WebAuthnMixin()
+        view.request = RequestFactory().get('/', HTTP_HOST=host)
+        return view
+
+    def test_rp_id_follows_the_request(self):
+        assert self._view('one.example.com').rp_id == 'one.example.com'
+        assert self._view('two.example.com:8000').rp_id == 'two.example.com'
+
+    def test_rp_name_falls_back_to_the_rp_id(self):
+        assert self._view('one.example.com').rp_name == 'one.example.com'
+
+    def test_only_this_hosts_passkeys_are_offered(self):
+        from modal_2fa.webauthn import get_user_authenticators
+
+        user = self.create_user()
+        for rp_id in ('one.example.com', 'two.example.com'):
+            WebauthnCredential.objects.create(user=user, rp_id=rp_id, credential_id=rp_id, sign_count=0)
+        request = RequestFactory().get('/', HTTP_HOST='one.example.com')
+        assert [c.rp_id for c in get_user_authenticators(user, request)] == ['one.example.com']
+
+    def test_an_assigned_rp_id_wins(self):
+        view = self._view('one.example.com')
+        view.rp_id = 'fixed.example'
+        assert view.rp_id == 'fixed.example'

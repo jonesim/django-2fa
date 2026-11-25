@@ -9,6 +9,7 @@ from ajax_helpers.utils import ajax_command
 from webauthn.helpers import bytes_to_base64url
 
 from modal_2fa.models import WebauthnCredential
+from modal_2fa.utils import get_custom_auth
 
 
 def web_authn_script():
@@ -28,27 +29,51 @@ except ModuleNotFoundError:
     not_installed = True
 
 
-def get_rp_id():
-    return getattr(settings, 'WEBAUTHN_RP_ID', 'localhost')
+def get_rp_id(request=None):
+    """The WebAuthn relying party id for ``request``: ``CustomiseAuth.webauthn_rp_id``, by default
+    ``settings.WEBAUTHN_RP_ID``. A passkey works only on the rp id it was registered under."""
+    return get_custom_auth().webauthn_rp_id(request)
 
 
-def get_user_authenticators(user):
-    return user.webauthn.filter(rp_id=get_rp_id())
+def get_rp_name(request=None):
+    return get_custom_auth().webauthn_rp_name(request)
+
+
+def get_user_authenticators(user, request=None):
+    return user.webauthn.filter(rp_id=get_rp_id(request))
 
 
 class WebAuthnMixin:
 
-    rp_name = ''
-
     def __init__(self, *args, **kwargs):
         self.last_error = None
-        self.rp_id = get_rp_id()
-        self.rp_name = getattr(settings, 'WEBAUTHN_RP_NAME', self.rp_id)
         super().__init__(*args, **kwargs)
+
+    # Worked out per request (the view's request is set after __init__), so one site can serve passkeys under more
+    # than one rp id: CustomiseAuth.webauthn_rp_id decides. Assigning either one fixes it for this view.
+    @property
+    def rp_id(self):
+        if '_rp_id' not in self.__dict__:
+            self._rp_id = get_rp_id(getattr(self, 'request', None))
+        return self._rp_id
+
+    @rp_id.setter
+    def rp_id(self, value):
+        self._rp_id = value
+
+    @property
+    def rp_name(self):
+        if '_rp_name' not in self.__dict__:
+            self._rp_name = get_rp_name(getattr(self, 'request', None))
+        return self._rp_name
+
+    @rp_name.setter
+    def rp_name(self, value):
+        self._rp_name = value
 
     def get(self, request, *args, **kwargs):
         if hasattr(self, 'user'):
-            authenticators = get_user_authenticators(self.user)
+            authenticators = get_user_authenticators(self.user, request)
             if authenticators:
                 self.ask_for_credentials(authenticators)
         return super().get(request, *args, **kwargs)

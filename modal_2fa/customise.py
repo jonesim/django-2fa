@@ -1,5 +1,6 @@
 import ipaddress
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.views import PasswordResetView
 
@@ -25,6 +26,9 @@ class CustomiseAuth(MicrosoftCustomiseMixin):
       - ``password_login_allowed(user) -> bool``  @staticmethod  — may this user log in with a password (default True)
       - ``allowed_remember(user) -> bool``        @staticmethod  — show the "remember this device" option
       - ``max_cookies(user) -> int``            @staticmethod  — max trusted devices per user (default 2)
+      - ``remember_days(user, request=None) -> int``  @staticmethod  — days a trusted device skips 2FA (default 365)
+      - ``webauthn_rp_id(request) -> str``      @staticmethod  — WebAuthn relying party id (default WEBAUTHN_RP_ID)
+      - ``webauthn_rp_name(request) -> str``    @staticmethod  — name the authenticator shows (default WEBAUTHN_RP_NAME)
       - ``is_ip_excluded(ip) -> bool``          @classmethod   — exempt an IP/CIDR from the shared-IP lockout
       - ``excluded_ips: list[str]``             class attr     — IPs/CIDRs feeding the default is_ip_excluded
 
@@ -192,6 +196,32 @@ class CustomiseAuth(MicrosoftCustomiseMixin):
     def allowed_remember(user):
         """Whether the "remember this device" option is offered to ``user``."""
         return True
+
+    @staticmethod
+    def remember_days(user, request=None):
+        """How many days a trusted device skips 2FA for ``user`` (default 365).
+
+        Counted from when the device was trusted, not from its last use, and checked on the
+        server as well as set as the cookie's expiry, so a copied or kept cookie stops working
+        on time. Shortening it ends trust for devices already older than the new length.
+        """
+        return 365
+
+    @staticmethod
+    def webauthn_rp_id(request):
+        """The WebAuthn relying party id for ``request`` (default ``settings.WEBAUTHN_RP_ID``).
+
+        A passkey only works under the rp id it was registered with, and the rp id must be the
+        request's host or a registrable suffix of it. Override for a site served on more than one
+        host (a control panel on one, customers on others): credentials are stored with their rp
+        id, so each host only offers the passkeys made for it. ``request`` may be None.
+        """
+        return getattr(settings, 'WEBAUTHN_RP_ID', 'localhost')
+
+    @classmethod
+    def webauthn_rp_name(cls, request):
+        """The name an authenticator shows for the site (default ``settings.WEBAUTHN_RP_NAME``)."""
+        return getattr(settings, 'WEBAUTHN_RP_NAME', None) or cls.webauthn_rp_id(request)
 
     @staticmethod
     def manage_max_cookies(user, max_number):

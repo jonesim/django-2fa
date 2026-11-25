@@ -42,19 +42,25 @@ class RememberDeviceCookie(models.Model):
             else:
                 return RememberDeviceCookie.objects.filter(id=key.split(':')[1], user=user, **kwargs).first()
 
+    def trusted_until(self, request=None):
+        """When this device stops skipping 2FA: ``CustomiseAuth.remember_days`` after it was trusted."""
+        created = self.created or timezone.now()
+        return created + datetime.timedelta(days=get_custom_auth().remember_days(self.user, request))
+
     @classmethod
     def test_cookie(cls, request, user, **kwargs):
         stored = cls.cookie_object(request, user, **kwargs)
-        if stored and stored.key == RememberDeviceCookie.cookie_key(request, user).split(':')[0]:
+        if (stored and stored.key == RememberDeviceCookie.cookie_key(request, user).split(':')[0]
+                and timezone.now() < stored.trusted_until(request)):
             return True
         return False
 
-    def set_cookie(self, response):
+    def set_cookie(self, response, request=None):
         # This is a 2FA-bypass token: keep it out of JS (httponly) and off
         # cross-site requests (samesite) in addition to https-only (secure).
         response.set_cookie(RememberDeviceCookie.cookie_name(self.user), value=f'{self.key}:{self.id}', secure=True,
                             httponly=True, samesite='Lax',
-                            expires=timezone.now() + datetime.timedelta(days=365))
+                            expires=self.trusted_until(request))
 
     @staticmethod
     def update_cookie(user, request, response):
@@ -62,7 +68,7 @@ class RememberDeviceCookie(models.Model):
         if remember_cookie:
             remember_cookie.key = random_string()
             remember_cookie.save()
-            remember_cookie.set_cookie(response)
+            remember_cookie.set_cookie(response, request)
 
 
 class WebauthnCredential(models.Model):

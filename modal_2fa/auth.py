@@ -132,7 +132,7 @@ class ConfirmCookieModal(CustomiseMixin, SuccessRedirectMixin, FormModal):
         )
         remember_cookie.save()
         response = self.success_response()
-        remember_cookie.set_cookie(response)
+        remember_cookie.set_cookie(response, self.request)
         return response
 
     def get_context_data(self, **kwargs):
